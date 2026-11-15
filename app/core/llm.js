@@ -168,10 +168,11 @@ export async function chatWithTools({ model, messages, tools, signal, timeoutMs 
  * Timeouts: CHAT_TIMEOUT_MS until the first chunk (covers model loading),
  * then STREAM_IDLE_TIMEOUT_MS of silence between chunks.
  *
- * @param {{ model: string, messages: {role: string, content: string}[], signal?: AbortSignal }} opts
+ * @param {{ model: string, messages: {role: string, content: string}[], signal?: AbortSignal, json?: boolean }} opts
+ *   json: ask for a JSON object reply (OpenAI response_format; Ollama enforces valid JSON)
  * @returns {AsyncGenerator<string, StreamStats, void>}
  */
-export async function* chatStream({ model, messages, signal }) {
+export async function* chatStream({ model, messages, signal, json = false }) {
   validateChatArgs(model, messages);
   if (signal?.aborted) throw new LlmError('ABORTED', 'Stopped', { model });
 
@@ -210,7 +211,13 @@ export async function* chatStream({ model, messages, signal }) {
       res = await fetch(`${config.ollamaUrl}/v1/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages, stream: true, stream_options: { include_usage: true } }),
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: true,
+          stream_options: { include_usage: true },
+          ...(json && { response_format: { type: 'json_object' } }),
+        }),
         signal: combined,
       });
     } catch (err) {

@@ -12,7 +12,8 @@ import { runAgent } from '../../core/agent.js';
 import { createFileTools } from '../../core/tools/files.js';
 import { html } from './html.js';
 import { parseBlocks } from './blocks.js';
-import { HELP_TEXT, PLANNED_COMMANDS, ROLES } from './commands.js';
+import { HELP_TEXT, ROLES } from './commands.js';
+import { ReviewError, audit, formatDebt, formatReport, gitDiff, harvestDebt, review, summarize } from '../../core/review.js';
 
 const defaultDeps = {
   createSession: (opts) => new Session(opts),
@@ -20,6 +21,10 @@ const defaultDeps = {
   runCheck,
   runAgent,
   createFileTools,
+  gitDiff,
+  review,
+  audit,
+  harvestDebt,
 };
 
 const STATUS_LABELS = {
@@ -30,10 +35,11 @@ const STATUS_LABELS = {
   error: ['error', 'red'],
   checking: ['checking models…', 'yellow'],
   editing: ['reading files…', 'yellow'],
+  reviewing: ['reviewing…', 'yellow'],
   review: ['review the change', 'magenta'],
 };
 
-const BUSY = new Set(['thinking', 'streaming', 'checking', 'editing', 'review']);
+const BUSY = new Set(['thinking', 'streaming', 'checking', 'editing', 'review', 'reviewing']);
 const QUIT_COMMANDS = new Set(['q', 'q!', 'quit', 'qa', 'wq']);
 const normaliseNewlines = (text) => text.replace(/\r\n?/g, '\n');
 
@@ -493,6 +499,69 @@ export function App({
     }
   }
 
+  // ---- Review (/review, /audit, /debt) ----
+  /** Runs a review job with Esc-to-stop, showing progress lines in the chat. */
+  async function runReviewJob(label, job) {
+    const role = manualRole ?? 'coder';
+    const reviewModel = config.models[role].name;
+    setRoute(`review: ${role}`);
+    setStatus('reviewing');
+    setScroll(null);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    const onProgress = (e) => {
+      if (e.type === 'chunk' && e.total > 1) info(`→ part ${e.index + 1} of ${e.total}`);
+      if (e.type === 'batch') info(`→ ${e.files.join(', ')} (${e.index + 1}/${e.total})`);
+    };
+    try {
+      info(`${label} with ${reviewModel} …`);
+      await job({ model: reviewModel, voice, signal: controller.signal, onProgress });
+      setStatus('ready');
+    } catch (err) {
+      if (err instanceof LlmError && err.code === 'ABORTED') {
+        info('[stopped]');
+        setStatus('stopped');
+      } else {
+        info(err.message, 'error');
+        setStatus('error');
+      }
+    } finally {
+      controllerRef.current = null;
+    }
+  }
+
+  function runReview(target) {
+    let input;
+    try {
+      input = deps.gitDiff(target, { cwd });
+    } catch (err) {
+      if (err instanceof ReviewError && err.code === 'NO_CHANGES') return info(`Nothing to review: ${err.message}.`);
+      return info(err.message, 'error');
+    }
+    addMessage({ role: 'user', text: `/review ${target}` });
+    return runReviewJob(`Reviewing ${input.description}`, async (opts) => {
+      const result = await deps.review(input, opts);
+      addMessage({ role: 'assistant', text: formatReport(result, { title: `Review of ${input.description}` }), state: 'done' });
+    });
+  }
+
+  function runAudit() {
+    addMessage({ role: 'user', text: '/audit' });
+    return runReviewJob('Auditing the most important files', async (opts) => {
+      const result = await deps.audit({ cwd, ...opts });
+      const header = `${summarize(result.findings)} — ${result.reviewed.length} of ${result.totalSource} source files reviewed`;
+      addMessage({ role: 'assistant', text: `${header}\n\n${formatReport(result)}`, state: 'done' });
+    });
+  }
+
+  function showDebt(word) {
+    try {
+      info(formatDebt(deps.harvestDebt({ cwd, word }), word));
+    } catch (err) {
+      info(err.message, 'error');
+    }
+  }
+
   async function showModelsReport() {
     setStatus('checking');
     const lines = [];
@@ -533,6 +602,15 @@ export function App({
       case 'edit':
         runEdit(rest);
         break;
+      case 'review':
+        runReview(args[0] ?? 'uncommitted');
+        break;
+      case 'audit':
+        runAudit();
+        break;
+      case 'debt':
+        showDebt(args[0] ?? 'shortcut');
+        break;
       case 'model':
         switchModel(args[0]);
         break;
@@ -550,8 +628,7 @@ export function App({
         quit();
         break;
       default:
-        if (PLANNED_COMMANDS.has(name)) info(`/${name} is coming in a later step.`);
-        else info(`Unknown command /${name} — try /help`, 'error');
+        info(`Unknown command /${name} — try /help`, 'error');
     }
   }
 

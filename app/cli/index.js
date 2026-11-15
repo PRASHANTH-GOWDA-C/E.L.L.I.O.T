@@ -10,6 +10,7 @@ import { NotCheckedFixer, colorizeDiff, formatFacts, formatHistory } from '../co
 import { getMemory, parseFact, projectFor } from '../core/memory.js';
 import { createFileTools } from '../core/tools/files.js';
 import { runAgent } from '../core/agent.js';
+import { ReviewError, audit, formatDebt, formatReport, gitDiff, harvestDebt, review, summarize } from '../core/review.js';
 
 const MAX_PIPED_CHARS = 12_000; // keeps piped logs inside a small context window
 const EXPLAIN_PROMPT = 'Explain this output and how to fix it.';
@@ -33,6 +34,11 @@ Files (only inside the current folder; nothing is written without your y):
   elliot read <file>             Print a project file
   elliot find "<text>"           Search project files (file:line: text)
   elliot ls [glob]               List project files (respects .gitignore)
+
+Review (Ponytail rules; advice only):
+  elliot review [target]         Review changes: uncommitted (default) | staged | branch | <file>
+  elliot audit                   Review the most important project files, worst first
+  elliot debt [word]             List "shortcut:" comments (or another word) to pay back
 
 Options:
   -m, --model <role>             coder, fast or reason (default: chosen automatically)
@@ -366,6 +372,92 @@ async function edit(positionals, { role, voice }, { yes }) {
   return exitCode;
 }
 
+// ---- Review commands -----------------------------------------------------------
+// Advice, not CI: findings never change the exit code. Only failing to run
+// (Ollama offline, not a repo…) is reported as an error.
+
+/** Runs a review/audit with Ctrl+C support and live progress on stderr. */
+async function withProgress(run) {
+  activeController = new AbortController();
+  let lastChars = 0;
+  const onProgress = (e) => {
+    if (e.type === 'tokens') {
+      // A live counter on one line (terminals only).
+      if (useColor && e.chars - lastChars >= 40) {
+        lastChars = e.chars;
+        process.stderr.write(dim(`\r    writing findings… ${e.chars} chars`));
+      }
+      return;
+    }
+    if (lastChars) process.stderr.write('\r\x1b[K'); // clear the counter line
+    lastChars = 0;
+    if (e.type === 'chunk' && e.total > 1) process.stderr.write(dim(`  → part ${e.index + 1} of ${e.total}\n`));
+    if (e.type === 'batch') process.stderr.write(dim(`  → ${e.files.join(', ')} (${e.index + 1}/${e.total})\n`));
+  };
+  try {
+    return await run({ signal: activeController.signal, onProgress });
+  } catch (err) {
+    if (err instanceof LlmError && err.code === 'ABORTED') {
+      process.stderr.write(`\n${dim('[stopped]')}\n`);
+      return null;
+    }
+    throw err;
+  } finally {
+    if (useColor) process.stderr.write('\r\x1b[K');
+    activeController = null;
+  }
+}
+
+async function reviewCommand(positionals, { role, voice }) {
+  const target = positionals[0] ?? 'uncommitted';
+  let input;
+  try {
+    input = gitDiff(target);
+  } catch (err) {
+    if (err instanceof ReviewError) {
+      if (err.code === 'NO_CHANGES') {
+        console.log(`Nothing to review: ${err.message}.`);
+        return 0;
+      }
+      throw new UsageError(err.message);
+    }
+    throw err;
+  }
+  const model = config.models[role ?? 'coder'].name;
+  process.stderr.write(dim(`Reviewing ${input.description} (${input.files.length} file${input.files.length === 1 ? '' : 's'}) with ${model} …\n`));
+  const started = performance.now();
+  const result = await withProgress((p) => review(input, { model, voice, ...p }));
+  if (!result) return 130;
+  console.log(formatReport(result, { color: useStdoutColor, title: `Review of ${input.description}` }));
+  process.stderr.write(dim(`\n${model} · ${((performance.now() - started) / 1000).toFixed(1)}s\n`));
+  return 0;
+}
+
+async function auditCommand({ role, voice }) {
+  const model = config.models[role ?? 'coder'].name;
+  process.stderr.write(dim(`Auditing ${process.cwd()} with ${model} (the most important files only) …\n`));
+  const started = performance.now();
+  const result = await withProgress((p) => audit({ model, voice, ...p }));
+  if (!result) return 130;
+  // One-line summary first, then the details.
+  console.log(`${summarize(result.findings)} — ${result.reviewed.length} of ${result.totalSource} source files reviewed`);
+  console.log(formatReport(result, { color: useStdoutColor }));
+  process.stderr.write(dim(`\n${model} · ${((performance.now() - started) / 1000).toFixed(1)}s\n`));
+  return 0;
+}
+
+function debtCommand(positionals) {
+  const word = positionals[0] ?? 'shortcut';
+  let items;
+  try {
+    items = harvestDebt({ word });
+  } catch (err) {
+    throw new UsageError(err.message);
+  }
+  console.log(formatDebt(items, word));
+  return 0;
+}
+
 // ---- Entry point -------------------------------------------------------------
 async function main(argv) {
   let parsed;
@@ -429,6 +521,12 @@ async function main(argv) {
       return find(rest);
     case 'ls':
       return ls(rest);
+    case 'review':
+      return reviewCommand(rest, opts);
+    case 'audit':
+      return auditCommand(opts);
+    case 'debt':
+      return debtCommand(rest);
     case 'models':
       return runCheck();
     default:
