@@ -1,13 +1,16 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Project root is one level above app/. Load .env from there so the app
+// Project root is two levels above app/core/. Load .env from there so Elliot
 // works no matter which directory it is launched from (e.g. a USB drive).
-export const ROOT_DIR = path.resolve(__dirname, '..');
+export const ROOT_DIR = path.resolve(__dirname, '..', '..');
 dotenv.config({ path: path.join(ROOT_DIR, '.env'), quiet: true });
+
+const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
 
 function toPort(value, fallback) {
   const n = Number.parseInt(value, 10);
@@ -30,6 +33,8 @@ const MODELS = Object.freeze({
 });
 
 const config = Object.freeze({
+  name: 'Elliot',
+  version: pkg.version,
   port: toPort(process.env.PORT, 3000),
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiMode: env('AI_MODE', 'offline'),

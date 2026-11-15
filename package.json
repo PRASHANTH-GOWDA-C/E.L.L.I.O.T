@@ -4,6 +4,9 @@
   "description": "E.L.L.I.O.T – Enhanced Logical Intelligence & Operational Technology. Offline-first AI coding companion.",
   "type": "module",
   "main": "app/server/index.js",
+  "bin": {
+    "elliot": "app/cli/index.js"
+  },
   "private": true,
   "engines": {
     "node": ">=20"
