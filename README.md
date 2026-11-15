@@ -12,7 +12,7 @@
 
 ![status](https://img.shields.io/badge/status-in%20development-orange)
 ![offline](https://img.shields.io/badge/mode-offline%20first-blue)
-![node](https://img.shields.io/badge/Node.js-20%2B-green)
+![node](https://img.shields.io/badge/Node.js-22%2B-green)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 [Features](#-features) · [Models](#-models) · [CLI](#%EF%B8%8F-the-elliot-command) · [Architecture](#%EF%B8%8F-architecture) · [Plugins](#-plugins-tools) · [Edward](edward/README.md) · [Roadmap](#%EF%B8%8F-roadmap)
@@ -175,6 +175,7 @@ Elliot runs **inside any terminal** (PowerShell, cmd, VS Code, WSL), from whatev
 | `elliot fix <file>` | Proposes a fix as a diff; applies it only if you press `y` |
 | `<command> 2>&1 \| elliot explain` | Explains piped error output |
 | `elliot models` | Shows which models are installed and loaded |
+| `elliot doctor` | One health report: Node, Ollama, models, memory database, current project |
 | `elliot online` / `elliot offline` | Switches hackathon mode on or off |
 
 **Inside full-screen mode:** `Enter` to send · `Esc` to stop a reply · `j`/`k` or arrows to scroll · `/review`, `/audit`, `/debt` commands · `:q` to quit.
@@ -190,6 +191,7 @@ Built with **Ink** (React for terminals). Installed on the laptop with `npm link
 | **RAM** | 8 GB (3B models only) | **16 GB** (7–9B models) |
 | **GPU** | Not required | Not required |
 | **OS** | Windows 10/11 | Windows 11 (+ WSL for Linux tools) |
+| **Node.js** | **22+** (required by Ink 8) | Latest LTS |
 | **Pendrive** | 32 GB, exFAT | **64 GB+, USB 3.2, 150+ MB/s read** |
 
 > ⚠️ Test every new pendrive with **H2testw** (Write + Verify) before use. Fake or faulty drives silently corrupt data.
@@ -202,10 +204,11 @@ Built with **Ink** (React for terminals). Installed on the laptop with `npm link
 
 ```
 E.L.L.I.O.T/
-├── start-elliot.bat        ← double-click to start
+├── start-elliot.bat        ← double-click to start (Windows)
+├── start-elliot.sh         ← same for Linux / WSL
 ├── elliot/
 │   ├── app/                ← Elliot's code (bundled, no node_modules)
-│   ├── bin/                ← `elliot` launcher
+│   ├── bin/                ← `elliot` launcher (elliot.cmd / elliot)
 │   ├── models/             ← Ollama models
 │   ├── runtime/            ← portable Ollama, Node.js
 │   ├── voice/              ← Parakeet / Whisper / Piper
@@ -219,21 +222,35 @@ E.L.L.I.O.T/
 ## 🚀 Quick start
 
 1. Plug in the pendrive.
-2. Double-click **`start-elliot.bat`**.
-3. Wait for the models to preload (1–4 min, depending on drive speed).
-4. Open any terminal and type **`elliot`**.
+2. Double-click **`start-elliot.bat`** (Linux / WSL: `bash start-elliot.sh`).
+3. A terminal opens in your home folder: type **`elliot`**. The coder model keeps loading in the background (1–4 min the first time, depending on drive speed).
+
+What `start-elliot.bat` does (abridged; see the file for the full version):
 
 ```bat
 @echo off
-set OLLAMA_MODELS=%~d0\elliot\models
+set "HERE=%~dp0"
+rem Pendrive layout (X:\elliot\...) or repo layout (app\ next to the script)
+if exist "%HERE%elliot\app\cli\index.js" (set "ELLIOT_HOME=%HERE%elliot") else (set "ELLIOT_HOME=%HERE%")
+rem Use the pendrive's models only if that folder exists
+if exist "%HERE%elliot\models\" set "OLLAMA_MODELS=%HERE%elliot\models"
 set OLLAMA_KEEP_ALIVE=-1
 set OLLAMA_MAX_LOADED_MODELS=3
-start "" /min "%~d0\elliot\runtime\ollama\ollama.exe" serve
-set PATH=%~d0\elliot\runtime\node;%~d0\elliot\bin;%PATH%
-start "" cmd /k "cd /d %USERPROFILE% && elliot"
+set "PATH=%ELLIOT_HOME%\runtime\node;%ELLIOT_HOME%\bin;%PATH%"
+rem Start Ollama only if it isn't running, then wait until http://127.0.0.1:11434 answers
+start "Ollama" /min ollama serve
+start "Elliot warm-up" /min node "%ELLIOT_HOME%\scripts\warmup.js"
+start "Elliot" /d "%USERPROFILE%" cmd /k "echo E.L.L.I.O.T is ready - type: elliot"
 ```
 
-The script uses relative paths, so it works whatever drive letter Windows assigns.
+It uses `%~dp0`, so it works whatever drive letter Windows assigns and from any folder (the repo on an SSD too). If Ollama is already running (for example the tray app), it keeps using that Ollama and its models folder.
+
+### First-time setup (on a new laptop or checkout)
+```powershell
+npm run setup     # checks Node 22+, installs dependencies, checks Ollama + models, runs npm link
+elliot doctor     # one report: Node, Ollama, models, memory database, current project
+```
+Both are safe to run again at any time.
 
 ### First-time model download
 ```powershell

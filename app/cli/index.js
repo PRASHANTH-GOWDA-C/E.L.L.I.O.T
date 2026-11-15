@@ -11,6 +11,7 @@ import { getMemory, parseFact, projectFor } from '../core/memory.js';
 import { createFileTools } from '../core/tools/files.js';
 import { runAgent } from '../core/agent.js';
 import { ReviewError, audit, formatDebt, formatReport, gitDiff, harvestDebt, review, summarize } from '../core/review.js';
+import { collectDoctorReport, formatDoctor } from '../core/doctor.js';
 
 const MAX_PIPED_CHARS = 12_000; // keeps piped logs inside a small context window
 const EXPLAIN_PROMPT = 'Explain this output and how to fix it.';
@@ -28,6 +29,7 @@ Usage:
   elliot remember "key: value"   Save a note about this project
   elliot facts                   List this project's notes
   elliot models                  Check Ollama and the required models
+  elliot doctor                  Health report: Node, Ollama, models, memory, project
 
 Files (only inside the current folder; nothing is written without your y):
   elliot edit "<instruction>"    Elliot proposes a change, shows the diff, asks y/N
@@ -529,6 +531,11 @@ async function main(argv) {
       return debtCommand(rest);
     case 'models':
       return runCheck();
+    case 'doctor': {
+      const { text, problems } = formatDoctor(await collectDoctorReport());
+      console.log(text);
+      return problems ? 1 : 0;
+    }
     default:
       throw new UsageError(`unknown command "${command}" — run elliot --help`);
   }

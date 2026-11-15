@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Runs Elliot from this folder (used when bin/ is on PATH, e.g. from start-elliot.sh).
+# Resolve symlinks so it also works when linked into ~/.local/bin.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+exec node "$(cd "$(dirname "$SELF")/.." && pwd)/app/cli/index.js" "$@"

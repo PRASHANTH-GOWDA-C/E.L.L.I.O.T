@@ -83,7 +83,7 @@ export class Memory {
    *   file: path to the SQLite file, or ':memory:'
    */
   constructor({
-    file = path.join(config.paths.memory, 'elliot.db'),
+    file = config.paths.dbFile,
     busyTimeout = 2_000,
     onWarn = (msg) => process.stderr.write(`elliot: ${msg}\n`),
   } = {}) {

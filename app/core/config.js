@@ -1,13 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { resolvePaths } from './paths.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-
-// Project root is two levels above app/core/. Load .env from there so Elliot
-// works no matter which directory it is launched from (e.g. a USB drive).
-export const ROOT_DIR = path.resolve(__dirname, '..', '..');
+// Elliot's own folders come from where the code lives (see paths.js), so .env
+// and memory/elliot.db are found no matter which folder `elliot` runs in.
+const PATHS = Object.freeze(resolvePaths());
+export const ROOT_DIR = PATHS.root;
 dotenv.config({ path: path.join(ROOT_DIR, '.env'), quiet: true });
 
 const pkg = JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'package.json'), 'utf8'));
@@ -50,12 +49,7 @@ const config = Object.freeze({
   autoReason: toBool(env('AUTO_REASON', 'false')),
   // An unknown ELLIOT_VOICE falls back to plain rather than breaking startup.
   voice: VOICES.includes(voice) ? voice : 'plain',
-  paths: Object.freeze({
-    root: ROOT_DIR,
-    web: path.join(ROOT_DIR, 'app', 'web'),
-    memory: path.join(ROOT_DIR, 'memory'),
-    models: path.join(ROOT_DIR, 'models'),
-  }),
+  paths: PATHS,
 });
 
 export default config;
