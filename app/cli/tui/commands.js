@@ -8,7 +8,9 @@ export const PLANNED_COMMANDS = new Set(['review', 'audit', 'debt']);
 export const HELP_TEXT = `Commands
   /help                      this list
   /clear                     start a new conversation
-  /model coder|fast|reason   switch model for the next messages
+  /model coder|fast|reason   use this model for the next messages (manual)
+  /auto                      pick the model automatically per message
+  /voice plain|alderson      change how Elliot talks
   /models                    model check report
   /quit                      quit
 

@@ -29,8 +29,12 @@ const MODELS = Object.freeze({
   embed: Object.freeze({ name: env('EMBED_MODEL', 'nomic-embed-text'), load: 'always' }),
   reason: Object.freeze({ name: env('REASON_MODEL', 'deepseek-r1:8b'), load: 'on-demand' }),
   vision: Object.freeze({ name: env('VISION_MODEL', 'qwen3.5:9b'), load: 'on-demand' }),
-  fast: Object.freeze({ name: env('FAST_MODEL', 'qwen3:4b'), load: 'on-demand' }),
+  fast: Object.freeze({ name: env('FAST_MODEL', 'qwen2.5-coder:1.5b'), load: 'on-demand' }),
 });
+
+// Speaking styles for Elliot's persona (see persona.js).
+export const VOICES = Object.freeze(['plain', 'alderson']);
+const voice = env('ELLIOT_VOICE', 'plain').toLowerCase();
 
 const config = Object.freeze({
   name: 'Elliot',
@@ -39,6 +43,8 @@ const config = Object.freeze({
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiMode: env('AI_MODE', 'offline'),
   models: MODELS,
+  // An unknown ELLIOT_VOICE falls back to plain rather than breaking startup.
+  voice: VOICES.includes(voice) ? voice : 'plain',
   paths: Object.freeze({
     root: ROOT_DIR,
     web: path.join(ROOT_DIR, 'app', 'web'),

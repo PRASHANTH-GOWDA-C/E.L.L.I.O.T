@@ -32,7 +32,8 @@ class FakeSession {
   }
 }
 
-function setup({ installed = ['qwen2.5-coder:7b', 'qwen3:4b'] } = {}) {
+// By default the coder and fast models are installed, the reason model is not.
+function setup({ installed = [config.models.coder.name, config.models.fast.name] } = {}) {
   let exited = false;
   const deps = {
     createSession: (opts) => new FakeSession(opts),
@@ -77,10 +78,11 @@ test('header shows name, model, mode and folder', async (t) => {
   await ui.waitFor('-- INSERT --');
   const frame = ui.frame();
   assert.match(frame, /E\.L\.L\.I\.O\.T/);
-  assert.match(frame, new RegExp(`${escapeRe(config.models.coder.name)} \\(coder\\)`));
+  assert.match(frame, new RegExp(`${escapeRe(config.models.coder.name)} \\(coder · auto\\)`));
   assert.match(frame, new RegExp(config.aiMode));
+  assert.match(frame, new RegExp(config.voice));
   assert.match(frame, /my-app/);
-  assert.match(frame, /ready/);
+  assert.match(frame, /ready  · auto/);
 });
 
 test('sending a message streams the reply, fixes "Not checked" and shows stats', async (t) => {
@@ -161,22 +163,74 @@ test('/model reason when not installed shows the pull command', async (t) => {
   await ui.waitFor('❯ /model reason');
   await ui.press(ENTER);
   await ui.waitFor(`ollama pull ${config.models.reason.name}`);
-  assert.match(ui.frame(), /\(coder\)/);
+  assert.match(ui.frame(), /\(coder · auto\)/);
 });
 
-test('/model fast switches the header and the next message uses it', async (t) => {
+const CODING_QUESTION = 'write a function that sorts users by age and name';
+
+test('auto routing: greeting → fast, coding question → coder, shown in the status bar', async (t) => {
+  FakeSession.instances = [];
+  const ui = setup();
+  t.after(() => ui.unmount());
+  await wait(50); // let the installed-model list load
+  await ui.type('hello');
+  await ui.waitFor('❯ hello');
+  await ui.press(ENTER);
+  await ui.waitFor('auto: fast (short message)');
+  await ui.waitFor('last:');
+  assert.match(ui.frame(), /\(fast · auto\)/);
+  await ui.type(CODING_QUESTION);
+  await ui.waitFor(`❯ ${CODING_QUESTION}`);
+  await ui.press(ENTER);
+  await ui.waitFor('auto: coder (coding question)');
+  const sent = FakeSession.instances[0].sent;
+  assert.deepEqual(
+    sent.map((s) => s.model),
+    [config.models.fast.name, config.models.coder.name],
+  );
+});
+
+test('/model fast overrides the router until /auto', async (t) => {
   FakeSession.instances = [];
   const ui = setup();
   t.after(() => ui.unmount());
   await ui.type('/model fast');
   await ui.waitFor('❯ /model fast');
   await ui.press(ENTER);
-  await ui.waitFor('(fast)');
-  await ui.type('hi');
-  await ui.waitFor('❯ hi');
+  await ui.waitFor('(fast · manual)');
+  // A coding question would normally go to coder; the manual choice wins.
+  await ui.type(CODING_QUESTION);
+  await ui.waitFor(`❯ ${CODING_QUESTION}`);
   await ui.press(ENTER);
+  await ui.waitFor('manual: fast');
   await ui.waitFor('last:');
   assert.equal(FakeSession.instances[0].sent[0].model, config.models.fast.name);
+
+  await ui.type('/auto');
+  await ui.waitFor('❯ /auto');
+  await ui.press(ENTER);
+  await ui.waitFor('Automatic model choice is on');
+  await ui.type(CODING_QUESTION);
+  await ui.waitFor(`❯ ${CODING_QUESTION}`);
+  await ui.press(ENTER);
+  await ui.waitFor('auto: coder (coding question)');
+  assert.equal(FakeSession.instances[0].sent[1].model, config.models.coder.name);
+});
+
+test('/voice alderson changes the session voice and the header', async (t) => {
+  FakeSession.instances = [];
+  const ui = setup();
+  t.after(() => ui.unmount());
+  await ui.type('/voice alderson');
+  await ui.waitFor('❯ /voice alderson');
+  await ui.press(ENTER);
+  await ui.waitFor('Voice: alderson.');
+  assert.match(ui.frame(), /·  alderson  ·/);
+  assert.equal(FakeSession.instances[0].voice, 'alderson');
+  await ui.type('/voice shouty');
+  await ui.waitFor('❯ /voice shouty');
+  await ui.press(ENTER);
+  await ui.waitFor('Unknown voice "shouty"');
 });
 
 test('/models shows the check report and /clear empties the conversation', async (t) => {

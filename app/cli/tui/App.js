@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { useEffect, useRef, useState } from 'react';
 import { Box, Text, useApp, useBoxMetrics, useInput, usePaste, useWindowSize } from 'ink';
-import config from '../../core/config.js';
+import config, { VOICES } from '../../core/config.js';
+import { chooseModel } from '../../core/router.js';
 import { Session } from '../../core/session.js';
 import { LlmError, isModelInstalled, listModels, missingModelError } from '../../core/llm.js';
 import { runCheck } from '../../core/check.js';
@@ -31,13 +32,15 @@ const normaliseNewlines = (text) => text.replace(/\r\n?/g, '\n');
 
 // ---- Presentational components ---------------------------------------------
 
-function Header({ role, model, mode, folder }) {
+function Header({ role, auto, model, mode, voice, folder }) {
   return html`
     <${Box} borderStyle="single" borderTop=${false} borderLeft=${false} borderRight=${false} borderColor="gray" flexShrink=${0}>
       <${Text} wrap="truncate">
         <${Text} color="cyan" bold>E.L.L.I.O.T<//>
         <${Text} dimColor>  ·  <//>
-        <${Text}>${model}<//><${Text} dimColor> (${role})<//>
+        <${Text}>${model}<//><${Text} dimColor> (${role} · ${auto ? 'auto' : 'manual'})<//>
+        <${Text} dimColor>  ·  <//>
+        <${Text}>${voice}<//>
         <${Text} dimColor>  ·  <//>
         <${Text} color=${mode === 'offline' ? 'green' : 'magenta'}>${mode}<//>
         <${Text} dimColor>  ·  <//>
@@ -87,21 +90,30 @@ function Message({ message }) {
   return html`<${Reply} message=${message} />`;
 }
 
-function StatusBar({ mode, status, stats }) {
+function StatusBar({ mode, status, stats, route, columns }) {
   const [label, color] = STATUS_LABELS[status];
+  const modeText = mode === 'insert' ? '-- INSERT --' : '-- NORMAL --';
+  const statsText = stats
+    ? `  · last: ${(stats.ms / 1000).toFixed(1)}s${stats.tokensPerSec !== null ? ` · ${stats.tokensPerSec} tok/s` : ''}`
+    : '';
+  const routeText = `  · ${route}`;
   const hint =
     mode === 'insert'
       ? 'Enter send · Esc stop/normal · /help'
       : 'j/k scroll · g/G top/bottom · i insert · :q quit';
+  // The key hint is the least important part: drop it when the line is full.
+  const leftLength = modeText.length + 2 + label.length + statsText.length + routeText.length;
+  const showHint = leftLength + 2 + hint.length <= columns;
   return html`
     <${Box} flexShrink=${0} justifyContent="space-between">
       <${Text} wrap="truncate">
-        <${Text} bold color=${mode === 'insert' ? 'green' : 'blue'}>${mode === 'insert' ? '-- INSERT --' : '-- NORMAL --'}<//>
+        <${Text} bold color=${mode === 'insert' ? 'green' : 'blue'}>${modeText}<//>
         <${Text}>  <//>
         <${Text} color=${color}>${label}<//>
-        ${stats ? html`<${Text} dimColor>  · last: ${(stats.ms / 1000).toFixed(1)}s${stats.tokensPerSec !== null ? ` · ${stats.tokensPerSec} tok/s` : ''}<//>` : null}
+        ${statsText ? html`<${Text} dimColor>${statsText}<//>` : null}
+        <${Text} dimColor>${routeText}<//>
       <//>
-      <${Text} dimColor wrap="truncate">${hint}<//>
+      ${showHint ? html`<${Text} dimColor wrap="truncate">${hint}<//>` : null}
     <//>`;
 }
 
@@ -125,18 +137,36 @@ function InputLine({ mode, input, cmdline, busy }) {
 
 /**
  * Full-screen chat. `deps` and `onExit` exist so tests can run without Ollama.
- * @param {{ role?: string, cwd?: string, deps?: typeof defaultDeps, onExit?: () => void }} props
+ * @param {{ role?: string, voice?: string, cwd?: string, deps?: typeof defaultDeps, onExit?: () => void }} props
+ *   role: a manual model role; undefined = automatic routing per message
  */
-export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = defaultDeps, onExit }) {
+export function App({ role: initialRole, voice: initialVoice = config.voice, cwd = process.cwd(), deps = defaultDeps, onExit }) {
   const { exit } = useApp();
-  const { rows } = useWindowSize();
+  const { rows, columns } = useWindowSize();
   const height = rows > 0 ? rows : 24;
   const folder = path.basename(cwd) || cwd;
 
-  const [role, setRole] = useState(initialRole);
-  const model = config.models[role].name;
+  const [manualRole, setManualRole] = useState(initialRole ?? null); // null = automatic
+  const [activeRole, setActiveRole] = useState(initialRole ?? 'coder'); // role of the latest message
+  const [route, setRoute] = useState(initialRole ? `manual: ${initialRole}` : 'auto');
+  const [voice, setVoice] = useState(initialVoice);
+  const model = config.models[activeRole].name;
   const sessionRef = useRef(null);
-  sessionRef.current ??= deps.createSession({ model, cwd });
+  sessionRef.current ??= deps.createSession({ model, cwd, voice });
+
+  // Installed models, for the router. null until known (router then uses coder).
+  const installedRef = useRef(null);
+  const refreshInstalled = async () => {
+    try {
+      installedRef.current = await deps.listModels();
+    } catch {
+      installedRef.current = null;
+    }
+    return installedRef.current;
+  };
+  useEffect(() => {
+    refreshInstalled();
+  }, []);
 
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
@@ -185,6 +215,18 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
   };
 
   async function sendMessage(text) {
+    // Manual choice (/model, -m) wins; otherwise route this message.
+    let role = manualRole;
+    let label = `manual: ${manualRole}`;
+    if (!role) {
+      const choice = chooseModel(text, { history: sessionRef.current.history, installed: installedRef.current });
+      role = choice.role;
+      label = `auto: ${choice.role} (${choice.reason})`;
+    }
+    sessionRef.current.model = config.models[role].name;
+    setActiveRole(role);
+    setRoute(label);
+
     const controller = new AbortController();
     controllerRef.current = controller;
     addMessage({ role: 'user', text });
@@ -225,7 +267,8 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
 
   async function switchModel(nextRole) {
     if (!nextRole) {
-      info(`Current model: ${role} (${model}). Usage: /model ${ROLES.join('|')}`);
+      const how = manualRole ? 'manual' : 'automatic';
+      info(`Current model: ${activeRole} (${model}), ${how}. Usage: /model ${ROLES.join('|')} · /auto`);
       return;
     }
     if (!ROLES.includes(nextRole)) {
@@ -235,6 +278,7 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
     const name = config.models[nextRole].name;
     try {
       const installed = await deps.listModels();
+      installedRef.current = installed;
       if (!isModelInstalled(installed, name)) {
         info(missingModelError(name).message, 'error');
         return;
@@ -244,8 +288,30 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
       return;
     }
     sessionRef.current.model = name;
-    setRole(nextRole);
-    info(`Switched to ${nextRole} (${name}).`);
+    setManualRole(nextRole);
+    setActiveRole(nextRole);
+    setRoute(`manual: ${nextRole}`);
+    info(`Switched to ${nextRole} (${name}). /auto goes back to automatic.`);
+  }
+
+  function enableAuto() {
+    setManualRole(null);
+    setRoute('auto');
+    info('Automatic model choice is on: each message picks coder, fast or reason.');
+  }
+
+  function switchVoice(nextVoice) {
+    if (!nextVoice) {
+      info(`Current voice: ${voice}. Usage: /voice ${VOICES.join('|')}`);
+      return;
+    }
+    if (!VOICES.includes(nextVoice)) {
+      info(`Unknown voice "${nextVoice}" — use one of: ${VOICES.join(', ')}`, 'error');
+      return;
+    }
+    sessionRef.current.voice = nextVoice; // keeps the conversation
+    setVoice(nextVoice);
+    info(`Voice: ${nextVoice}.`);
   }
 
   async function showModelsReport() {
@@ -272,7 +338,7 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
         info(HELP_TEXT);
         break;
       case 'clear':
-        sessionRef.current = deps.createSession({ model, cwd });
+        sessionRef.current = deps.createSession({ model, cwd, voice });
         setMessages([]);
         setStats(null);
         setStatus('ready');
@@ -281,7 +347,14 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
       case 'model':
         switchModel(args[0]);
         break;
+      case 'auto':
+        enableAuto();
+        break;
+      case 'voice':
+        switchVoice(args[0]);
+        break;
       case 'models':
+        refreshInstalled();
         showModelsReport();
         break;
       case 'quit':
@@ -362,7 +435,7 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
 
   return html`
     <${Box} flexDirection="column" height=${height}>
-      <${Header} role=${role} model=${model} mode=${config.aiMode} folder=${folder} />
+      <${Header} role=${activeRole} auto=${!manualRole} model=${model} mode=${config.aiMode} voice=${voice} folder=${folder} />
       <${Box} ref=${viewportRef} flexGrow=${1} flexDirection="column" overflow="hidden" contentOffsetY=${top}>
         <${Box} ref=${contentRef} flexDirection="column" flexShrink=${0} paddingX=${1}>
           ${messages.length === 0
@@ -370,7 +443,7 @@ export function App({ role: initialRole = 'coder', cwd = process.cwd(), deps = d
             : messages.map((m) => html`<${Message} key=${m.id} message=${m} />`)}
         <//>
       <//>
-      <${StatusBar} mode=${mode} status=${status} stats=${stats} />
+      <${StatusBar} mode=${mode} status=${status} stats=${stats} route=${route} columns=${columns > 0 ? columns : 80} />
       <${InputLine} mode=${mode} input=${input} cmdline=${cmdline} busy=${busy} />
     <//>`;
 }

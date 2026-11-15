@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { parseArgs, stripVTControlCharacters } from 'node:util';
-import config from '../core/config.js';
-import { LlmError } from '../core/llm.js';
+import config, { VOICES } from '../core/config.js';
+import { LlmError, listModels } from '../core/llm.js';
+import { chooseModel } from '../core/router.js';
 import { Session } from '../core/session.js';
 import { runCheck } from '../core/check.js';
 import { NotCheckedFixer } from '../core/format.js';
@@ -20,12 +21,13 @@ Usage:
   elliot models                  Check Ollama and the required models
 
 Options:
-  -m, --model <role>             coder (default), fast or reason
+  -m, --model <role>             coder, fast or reason (default: chosen automatically)
+      --voice <voice>            plain or alderson (default: ELLIOT_VOICE or plain)
   -h, --help                     Show this help
   -v, --version                  Show the version
 
 Examples:
-  elliot -m fast
+  elliot --voice alderson
   elliot ask "Write a JS function that reverses a string"
   npm test 2>&1 | elliot ask -m reason "what broke?"
   node app.js 2>&1 | elliot explain`;
@@ -86,8 +88,21 @@ function withContext(piped, question) {
 }
 
 // ---- Commands ----------------------------------------------------------------
-async function streamAnswer(message, role) {
-  const session = new Session({ model: config.models[role].name });
+/** Manual -m choice wins; otherwise the router picks from the message. */
+async function resolveModel(message, manualRole) {
+  if (manualRole) {
+    return { model: config.models[manualRole].name, label: `manual: ${manualRole}` };
+  }
+  // The router only picks reason/fast if installed. If Ollama is unreachable it
+  // falls back to coder, and the chat request then reports the real error.
+  const installed = await listModels().catch(() => null);
+  const choice = chooseModel(message, { installed });
+  return { model: choice.model, label: `auto: ${choice.role} (${choice.reason})` };
+}
+
+async function streamAnswer(message, { role, voice }) {
+  const { model: chosenModel, label } = await resolveModel(message, role);
+  const session = new Session({ model: chosenModel, voice });
   activeController = new AbortController();
 
   const stream = session.send(message, { signal: activeController.signal });
@@ -118,31 +133,31 @@ async function streamAnswer(message, role) {
   if (!endsWithNewline) process.stdout.write('\n');
   const { model, ms, tokensPerSec, chars } = result.value;
   const speed = tokensPerSec !== null ? `${tokensPerSec} tok/s` : `${chars} chars`;
-  process.stderr.write(`${dim(`\n${model} · ${(ms / 1000).toFixed(1)}s · ${speed}`)}\n`);
+  process.stderr.write(`${dim(`\n${model} · ${label} · ${(ms / 1000).toFixed(1)}s · ${speed}`)}\n`);
   return 0;
 }
 
-async function ask(positionals, role) {
+async function ask(positionals, opts) {
   const question = positionals.join(' ').trim();
   if (!question) throw new UsageError('ask needs a question, e.g. elliot ask "how do I read a file in Node?"');
   const piped = await readPipedInput();
-  return streamAnswer(withContext(piped, question), role);
+  return streamAnswer(withContext(piped, question), opts);
 }
 
-async function explain(positionals, role) {
+async function explain(positionals, opts) {
   const piped = await readPipedInput();
   if (!piped) throw new UsageError('explain needs piped input, e.g. npm test 2>&1 | elliot explain');
   const extra = positionals.join(' ').trim();
-  return streamAnswer(withContext(piped, extra ? `${EXPLAIN_PROMPT} ${extra}` : EXPLAIN_PROMPT), role);
+  return streamAnswer(withContext(piped, extra ? `${EXPLAIN_PROMPT} ${extra}` : EXPLAIN_PROMPT), opts);
 }
 
-async function fullScreen(role) {
+async function fullScreen({ role, voice }) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
     throw new UsageError('full-screen mode needs an interactive terminal — try: elliot ask "hello"');
   }
   // Loaded lazily so `elliot ask` doesn't pay for React/Ink startup.
   const { runTui } = await import('./tui/index.js');
-  await runTui({ role });
+  await runTui({ role, voice });
   return 0;
 }
 
@@ -156,7 +171,8 @@ async function main(argv) {
       options: {
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
-        model: { type: 'string', short: 'm', default: 'coder' },
+        model: { type: 'string', short: 'm' },
+        voice: { type: 'string' },
       },
     });
   } catch (err) {
@@ -164,10 +180,15 @@ async function main(argv) {
   }
 
   const { values, positionals } = parsed;
-  const role = values.model;
-  if (!ROLES.includes(role)) {
+  const role = values.model; // undefined = automatic
+  if (role !== undefined && !ROLES.includes(role)) {
     throw new UsageError(`unknown model role "${role}" — use one of: ${ROLES.join(', ')}`);
   }
+  const voice = values.voice ?? config.voice;
+  if (!VOICES.includes(voice)) {
+    throw new UsageError(`unknown voice "${voice}" — use one of: ${VOICES.join(', ')}`);
+  }
+  const opts = { role, voice };
   if (values.help) {
     console.log(HELP);
     return 0;
@@ -180,11 +201,11 @@ async function main(argv) {
   const [command, ...rest] = positionals;
   switch (command) {
     case undefined:
-      return fullScreen(role);
+      return fullScreen(opts);
     case 'ask':
-      return ask(rest, role);
+      return ask(rest, opts);
     case 'explain':
-      return explain(rest, role);
+      return explain(rest, opts);
     case 'models':
       return runCheck();
     default:

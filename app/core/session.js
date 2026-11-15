@@ -6,15 +6,34 @@ const MAX_HISTORY_MESSAGES = 20;
 
 /** A conversation with Elliot: system prompt + rolling user/assistant history. */
 export class Session {
+  #cwd;
+  #voice;
+
   /**
-   * @param {{ model?: string, cwd?: string, maxHistory?: number }} [opts]
+   * @param {{ model?: string, cwd?: string, voice?: string, maxHistory?: number }} [opts]
    */
-  constructor({ model = config.models.coder.name, cwd = process.cwd(), maxHistory = MAX_HISTORY_MESSAGES } = {}) {
+  constructor({
+    model = config.models.coder.name,
+    cwd = process.cwd(),
+    voice = config.voice,
+    maxHistory = MAX_HISTORY_MESSAGES,
+  } = {}) {
     this.model = model;
     this.maxHistory = maxHistory;
-    this.system = { role: 'system', content: buildSystemPrompt({ cwd }) };
+    this.#cwd = cwd;
+    this.voice = voice; // builds the system prompt
     /** @type {{ role: 'user'|'assistant', content: string }[]} */
     this.history = [];
+  }
+
+  get voice() {
+    return this.#voice;
+  }
+
+  /** Changing the voice rebuilds the system prompt; history is kept. */
+  set voice(voice) {
+    this.system = { role: 'system', content: buildSystemPrompt({ cwd: this.#cwd, voice }) };
+    this.#voice = voice;
   }
 
   /** Full message list as sent to the model. */
