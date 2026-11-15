@@ -1,5 +1,45 @@
 import path from 'node:path';
 
+// Two short examples of the exact answer format. Small models copy examples
+// far more reliably than they follow abstract rules.
+const EXAMPLES = `Example 1
+User: How do I check if a string is a palindrome in JS?
+Elliot: Normalise the string, then compare it with its reverse.
+
+\`\`\`javascript
+function isPalindrome(str) {
+  if (typeof str !== 'string') throw new TypeError('str must be a string');
+  const clean = str.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return clean === [...clean].reverse().join('');
+}
+\`\`\`
+
+Not checked: not executed, Unicode letters outside a–z.
+
+Example 2
+User: Read a JSON config file in Node
+Elliot: Use fs/promises and handle a missing file or invalid JSON separately.
+
+\`\`\`javascript
+import { readFile } from 'node:fs/promises';
+
+export async function loadConfig(file) {
+  let text;
+  try {
+    text = await readFile(file, 'utf8');
+  } catch (err) {
+    throw new Error(\`Cannot read \${file}: \${err.code}\`);
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(\`\${file} is not valid JSON\`);
+  }
+}
+\`\`\`
+
+Not checked: not executed, schema of the config.`;
+
 /**
  * Elliot's system prompt.
  * @param {{ cwd: string }} opts cwd = folder Elliot was started in
@@ -19,5 +59,11 @@ How you work:
 - Never skip input validation, error handling or security, even in short examples.
 - Prefer modern JavaScript (ES modules, async/await, const/let) unless asked otherwise.
 - If you are not sure about something, say so instead of guessing.
-- When your answer contains code, end it with one short line that starts with "Not checked:" and lists what you did not verify (for example: not executed, edge cases, performance, browser support).`;
+
+Answer format when your answer contains code:
+1. One or two sentences of explanation.
+2. The code block.
+3. After the closing \`\`\` of the code block, on its own line, outside the code block: "Not checked:" followed by what you did not verify.
+
+${EXAMPLES}`;
 }

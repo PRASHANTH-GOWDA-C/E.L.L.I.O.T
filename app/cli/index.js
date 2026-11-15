@@ -4,25 +4,30 @@ import config from '../core/config.js';
 import { LlmError } from '../core/llm.js';
 import { Session } from '../core/session.js';
 import { runCheck } from '../core/check.js';
+import { NotCheckedFixer } from '../core/format.js';
 
 const MAX_PIPED_CHARS = 12_000; // keeps piped logs inside a small context window
 const EXPLAIN_PROMPT = 'Explain this output and how to fix it.';
+const ROLES = ['coder', 'fast', 'reason'];
 
 const HELP = `E.L.L.I.O.T v${config.version} – offline coding companion
 
 Usage:
+  elliot                         Open the full-screen chat
   elliot ask "<question>"        Ask Elliot; the answer streams as it arrives
   <command> | elliot ask "<q>"   Include piped output as context
   <command> | elliot explain     Explain piped output and how to fix it
   elliot models                  Check Ollama and the required models
 
 Options:
+  -m, --model <role>             coder (default), fast or reason
   -h, --help                     Show this help
   -v, --version                  Show the version
 
 Examples:
+  elliot -m fast
   elliot ask "Write a JS function that reverses a string"
-  npm test 2>&1 | elliot ask "what broke?"
+  npm test 2>&1 | elliot ask -m reason "what broke?"
   node app.js 2>&1 | elliot explain`;
 
 const useColor = process.stderr.isTTY && !process.env.NO_COLOR;
@@ -81,20 +86,26 @@ function withContext(piped, question) {
 }
 
 // ---- Commands ----------------------------------------------------------------
-async function streamAnswer(message) {
-  const session = new Session();
+async function streamAnswer(message, role) {
+  const session = new Session({ model: config.models[role].name });
   activeController = new AbortController();
 
   const stream = session.send(message, { signal: activeController.signal });
+  const fixer = new NotCheckedFixer();
   let endsWithNewline = true;
+  const write = (text) => {
+    if (!text) return;
+    process.stdout.write(text);
+    endsWithNewline = text.endsWith('\n');
+  };
+
   let result;
   try {
-    while (!(result = await stream.next()).done) {
-      process.stdout.write(result.value);
-      endsWithNewline = result.value.endsWith('\n');
-    }
+    while (!(result = await stream.next()).done) write(fixer.push(result.value));
+    write(fixer.end());
   } catch (err) {
     if (err instanceof LlmError && err.code === 'ABORTED') {
+      write(fixer.end());
       process.stderr.write(`${endsWithNewline ? '' : '\n'}${dim('[stopped]')}\n`);
       return 130;
     }
@@ -111,18 +122,28 @@ async function streamAnswer(message) {
   return 0;
 }
 
-async function ask(positionals) {
+async function ask(positionals, role) {
   const question = positionals.join(' ').trim();
   if (!question) throw new UsageError('ask needs a question, e.g. elliot ask "how do I read a file in Node?"');
   const piped = await readPipedInput();
-  return streamAnswer(withContext(piped, question));
+  return streamAnswer(withContext(piped, question), role);
 }
 
-async function explain(positionals) {
+async function explain(positionals, role) {
   const piped = await readPipedInput();
   if (!piped) throw new UsageError('explain needs piped input, e.g. npm test 2>&1 | elliot explain');
   const extra = positionals.join(' ').trim();
-  return streamAnswer(withContext(piped, extra ? `${EXPLAIN_PROMPT} ${extra}` : EXPLAIN_PROMPT));
+  return streamAnswer(withContext(piped, extra ? `${EXPLAIN_PROMPT} ${extra}` : EXPLAIN_PROMPT), role);
+}
+
+async function fullScreen(role) {
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    throw new UsageError('full-screen mode needs an interactive terminal — try: elliot ask "hello"');
+  }
+  // Loaded lazily so `elliot ask` doesn't pay for React/Ink startup.
+  const { runTui } = await import('./tui/index.js');
+  await runTui({ role });
+  return 0;
 }
 
 // ---- Entry point -------------------------------------------------------------
@@ -135,6 +156,7 @@ async function main(argv) {
       options: {
         help: { type: 'boolean', short: 'h' },
         version: { type: 'boolean', short: 'v' },
+        model: { type: 'string', short: 'm', default: 'coder' },
       },
     });
   } catch (err) {
@@ -142,6 +164,10 @@ async function main(argv) {
   }
 
   const { values, positionals } = parsed;
+  const role = values.model;
+  if (!ROLES.includes(role)) {
+    throw new UsageError(`unknown model role "${role}" — use one of: ${ROLES.join(', ')}`);
+  }
   if (values.help) {
     console.log(HELP);
     return 0;
@@ -154,12 +180,11 @@ async function main(argv) {
   const [command, ...rest] = positionals;
   switch (command) {
     case undefined:
-      console.log('Full-screen mode is coming in the next step — try: elliot ask "hello"');
-      return 0;
+      return fullScreen(role);
     case 'ask':
-      return ask(rest);
+      return ask(rest, role);
     case 'explain':
-      return explain(rest);
+      return explain(rest, role);
     case 'models':
       return runCheck();
     default:

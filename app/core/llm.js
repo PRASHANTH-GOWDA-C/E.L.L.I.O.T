@@ -22,7 +22,7 @@ export class LlmError extends Error {
 const offlineError = (cause) =>
   new LlmError('OLLAMA_OFFLINE', 'Ollama is not running — start it with `ollama serve`', { cause });
 
-const missingModelError = (model) =>
+export const missingModelError = (model) =>
   new LlmError('MODEL_MISSING', `Model ${model} is not installed — run \`ollama pull ${model}\``, { model });
 
 const isAbortLike = (err) => err?.name === 'TimeoutError' || err?.name === 'AbortError';
@@ -218,7 +218,12 @@ export async function* chatStream({ model, messages, signal }) {
         }
         if (event.usage) usage = event.usage;
 
-        const text = event.choices?.[0]?.delta?.content;
+        const delta = event.choices?.[0]?.delta;
+        // Thinking models (qwen3, deepseek-r1) stream their reasoning separately.
+        // It isn't shown, but it proves the model is alive, so it resets the timeout.
+        if (delta?.reasoning || delta?.reasoning_content) resetTimer(STREAM_IDLE_TIMEOUT_MS);
+
+        const text = delta?.content;
         if (text) {
           firstChunkAt ??= performance.now();
           chars += text.length;
