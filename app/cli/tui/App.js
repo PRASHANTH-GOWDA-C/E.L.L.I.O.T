@@ -6,7 +6,8 @@ import { chooseModel } from '../../core/router.js';
 import { Session } from '../../core/session.js';
 import { LlmError, isModelInstalled, listModels, missingModelError } from '../../core/llm.js';
 import { runCheck } from '../../core/check.js';
-import { NotCheckedFixer } from '../../core/format.js';
+import { NotCheckedFixer, fixNotChecked, formatFacts, formatHistory } from '../../core/format.js';
+import { parseFact } from '../../core/memory.js';
 import { html } from './html.js';
 import { parseBlocks } from './blocks.js';
 import { HELP_TEXT, PLANNED_COMMANDS, ROLES } from './commands.js';
@@ -137,10 +138,24 @@ function InputLine({ mode, input, cmdline, busy }) {
 
 /**
  * Full-screen chat. `deps` and `onExit` exist so tests can run without Ollama.
- * @param {{ role?: string, voice?: string, cwd?: string, deps?: typeof defaultDeps, onExit?: () => void }} props
- *   role: a manual model role; undefined = automatic routing per message
+ * @param {{
+ *   role?: string, voice?: string, cwd?: string,
+ *   memory?: import('../../core/memory.js').Memory | null,  // null = no memory
+ *   fresh?: boolean,          // start a new conversation instead of continuing
+ *   conversationId?: number,  // resume this conversation
+ *   deps?: typeof defaultDeps, onExit?: () => void,
+ * }} props role: a manual model role; undefined = automatic routing per message
  */
-export function App({ role: initialRole, voice: initialVoice = config.voice, cwd = process.cwd(), deps = defaultDeps, onExit }) {
+export function App({
+  role: initialRole,
+  voice: initialVoice = config.voice,
+  cwd = process.cwd(),
+  memory = null,
+  fresh = false,
+  conversationId,
+  deps = defaultDeps,
+  onExit,
+}) {
   const { exit } = useApp();
   const { rows, columns } = useWindowSize();
   const height = rows > 0 ? rows : 24;
@@ -152,7 +167,8 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
   const [voice, setVoice] = useState(initialVoice);
   const model = config.models[activeRole].name;
   const sessionRef = useRef(null);
-  sessionRef.current ??= deps.createSession({ model, cwd, voice });
+  const newSession = (opts = {}) => deps.createSession({ model, cwd, voice, memory, ...opts });
+  sessionRef.current ??= newSession({ continue: !fresh, conversationId });
 
   // Installed models, for the router. null until known (router then uses coder).
   const installedRef = useRef(null);
@@ -168,7 +184,26 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
     refreshInstalled();
   }, []);
 
-  const [messages, setMessages] = useState([]);
+  const nextId = useRef(0);
+  // Show the continued conversation (seeded history) on screen.
+  const [messages, setMessages] = useState(() => {
+    const session = sessionRef.current;
+    if (!session.conversationId || session.history.length === 0) return [];
+    const shown = session.history.map((m) => ({
+      id: nextId.current++,
+      role: m.role,
+      text: m.role === 'assistant' ? fixNotChecked(m.content) : m.content,
+      state: 'done',
+    }));
+    const title = session.title ? ` “${session.title}”` : '';
+    shown.push({
+      id: nextId.current++,
+      role: 'info',
+      level: 'info',
+      text: `Continuing chat #${session.conversationId}${title} · /new starts fresh`,
+    });
+    return shown;
+  });
   const [input, setInput] = useState('');
   const [mode, setMode] = useState('insert');
   const [cmdline, setCmdline] = useState(null); // ":…" in NORMAL mode
@@ -176,7 +211,6 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
   const [stats, setStats] = useState(null);
   const [scroll, setScroll] = useState(null); // null = follow the newest message
   const controllerRef = useRef(null);
-  const nextId = useRef(0);
   const busy = BUSY.has(status);
 
   // Stop a running reply if the UI is closed (Ctrl+C, :q).
@@ -207,6 +241,16 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
     addMessage({ role: 'info', text, level });
     setScroll(null);
   };
+
+  // Memory problems (locked DB…) are shown in the chat, never written over the screen.
+  useEffect(() => {
+    if (!memory) return undefined;
+    if (memory.warning) info(memory.warning, 'error');
+    memory.onWarn = (warning) => info(warning, 'error');
+    return () => {
+      memory.onWarn = null;
+    };
+  }, [memory]);
 
   const quit = () => {
     controllerRef.current?.abort();
@@ -314,6 +358,37 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
     info(`Voice: ${nextVoice}.`);
   }
 
+  function startNewConversation() {
+    sessionRef.current = newSession();
+    setMessages([]);
+    setStats(null);
+    setStatus('ready');
+    setScroll(null);
+  }
+
+  function showHistory() {
+    if (!memory) return info('Memory is off.', 'error');
+    const list = memory.listConversations(sessionRef.current.project);
+    if (list.length === 0) return info('No saved conversations for this project yet.');
+    info(`${formatHistory(list, sessionRef.current.conversationId)}\n\nResume one with: elliot resume <id>`);
+  }
+
+  function rememberFact(text) {
+    if (!memory) return info('Memory is off.', 'error');
+    const fact = parseFact(text);
+    if (!fact) return info('Usage: /remember key: value   e.g. /remember stack: Node + MySQL', 'error');
+    if (!memory.saveFact(sessionRef.current.project, fact.key, fact.value)) return; // warning shown
+    sessionRef.current.refreshFacts();
+    info(`Remembered: ${fact.key} = ${fact.value}`);
+  }
+
+  function showFacts() {
+    if (!memory) return info('Memory is off.', 'error');
+    const list = memory.getFacts(sessionRef.current.project);
+    if (list.length === 0) return info('No notes yet. Add one with /remember key: value');
+    info(`Notes for this project\n${formatFacts(list)}`);
+  }
+
   async function showModelsReport() {
     setStatus('checking');
     const lines = [];
@@ -329,6 +404,7 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
 
   function runCommand(commandLine) {
     const [name, ...args] = commandLine.slice(1).trim().split(/\s+/);
+    const rest = commandLine.slice(1).trim().slice(name.length).trim(); // text after the command
     if (busy && !['help', 'quit'].includes(name)) {
       info('Busy — press Esc to stop the reply first.', 'error');
       return;
@@ -337,12 +413,18 @@ export function App({ role: initialRole, voice: initialVoice = config.voice, cwd
       case 'help':
         info(HELP_TEXT);
         break;
+      case 'new':
       case 'clear':
-        sessionRef.current = deps.createSession({ model, cwd, voice });
-        setMessages([]);
-        setStats(null);
-        setStatus('ready');
-        setScroll(null);
+        startNewConversation();
+        break;
+      case 'history':
+        showHistory();
+        break;
+      case 'remember':
+        rememberFact(rest);
+        break;
+      case 'facts':
+        showFacts();
         break;
       case 'model':
         switchModel(args[0]);

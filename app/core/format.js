@@ -135,3 +135,28 @@ export function fixNotChecked(text) {
   const fixer = new NotCheckedFixer();
   return fixer.push(text) + fixer.end();
 }
+
+// ---- Memory listings (shared by the CLI and the full-screen UI) ----------------
+
+/** ISO timestamp → "2026-11-15 17:42" in local time. */
+export function formatDate(iso) {
+  const d = new Date(iso);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Table of conversations (from Memory.listConversations). Marks `currentId` with "*". */
+export function formatHistory(conversations, currentId = null) {
+  const header = `${'ID'.padStart(5)}  ${'LAST ACTIVE'.padEnd(16)}  ${'MSGS'.padStart(4)}  TITLE`;
+  const rows = conversations.map((c) => {
+    const id = `${c.id === currentId ? '*' : ''}${c.id}`.padStart(5);
+    return `${id}  ${formatDate(c.updated_at)}  ${String(c.message_count).padStart(4)}  ${c.title ?? '(untitled)'}`;
+  });
+  return [header, ...rows].join('\n');
+}
+
+/** "key  value" lines for facts (from Memory.getFacts). */
+export function formatFacts(facts) {
+  const width = Math.max(...facts.map((f) => f.key.length));
+  return facts.map((f) => `  ${f.key.padEnd(width)}  ${f.value}`).join('\n');
+}

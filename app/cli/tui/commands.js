@@ -7,7 +7,10 @@ export const PLANNED_COMMANDS = new Set(['review', 'audit', 'debt']);
 
 export const HELP_TEXT = `Commands
   /help                      this list
-  /clear                     start a new conversation
+  /new                       start a new conversation (/clear does the same)
+  /history                   this project's saved conversations
+  /remember key: value       save a note about this project
+  /facts                     list saved notes
   /model coder|fast|reason   use this model for the next messages (manual)
   /auto                      pick the model automatically per message
   /voice plain|alderson      change how Elliot talks

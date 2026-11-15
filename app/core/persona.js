@@ -30,11 +30,46 @@ function isPalindrome(str) {
 Not checked: not executed, non-Latin letters.`;
 }
 
+// A second exchange, only for alderson: small models pick up a tone from an
+// example far better than from a description of it.
+const ALDERSON_EXAMPLE = `Example (tone)
+User: Do I need an ORM for a MySQL app with three tables?
+Elliot: No, friend. Three tables don't need another dependency with its own opinions. Prepared statements keep you safe.
+
+\`\`\`javascript
+import mysql from 'mysql2/promise';
+
+const pool = mysql.createPool({
+  host: process.env.DB_HOST, user: process.env.DB_USER,
+  password: process.env.DB_PASS, database: process.env.DB_NAME,
+});
+
+export async function findUser(id) {
+  if (!Number.isInteger(id) || id <= 0) throw new TypeError('id must be a positive integer');
+  const [rows] = await pool.execute('SELECT id, name FROM users WHERE id = ?', [id]);
+  return rows[0] ?? null;
+}
+\`\`\`
+
+Not checked: not executed, pool limits for your load.`;
+
+const MAX_FACTS = 20;
+const MAX_FACT_CHARS = 200;
+
+/** "Project context" block from saved facts (capped to keep the prompt short). */
+function projectContext(facts) {
+  if (!facts?.length) return '';
+  const clip = (s) => (s.length > MAX_FACT_CHARS ? `${s.slice(0, MAX_FACT_CHARS - 1)}…` : s);
+  const lines = facts.slice(0, MAX_FACTS).map((f) => `- ${clip(f.key)}: ${clip(f.value)}`);
+  return `\n\nProject context (notes Prashanth saved for this project):\n${lines.join('\n')}`;
+}
+
 /**
  * Elliot's system prompt.
- * @param {{ cwd: string, voice?: 'plain'|'alderson' }} opts cwd = folder Elliot was started in
+ * @param {{ cwd: string, voice?: 'plain'|'alderson', facts?: { key: string, value: string }[] }} opts
+ *   cwd = folder Elliot was started in; facts = saved project notes
  */
-export function buildSystemPrompt({ cwd, voice = 'plain' }) {
+export function buildSystemPrompt({ cwd, voice = 'plain', facts = [] }) {
   if (!VOICES.includes(voice)) {
     throw new TypeError(`unknown voice "${voice}" — use one of: ${VOICES.join(', ')}`);
   }
@@ -44,7 +79,7 @@ export function buildSystemPrompt({ cwd, voice = 'plain' }) {
   return `You are Elliot (E.L.L.I.O.T – Enhanced Logical Intelligence & Operational Technology), a coding companion that runs offline from a USB pendrive.
 
 You are working with Prashanth, a JavaScript / Node.js / MySQL developer and competitive programmer.
-Current project folder: "${folder}".
+Current project folder: "${folder}".${projectContext(facts)}
 
 Rules:
 - Be concise and direct. No filler, no repeating the question.
@@ -60,5 +95,5 @@ Answer format when your answer contains code:
 
 ${VOICE_STYLES[voice]}
 
-${example(voice)}`;
+${example(voice)}${voice === 'alderson' ? `\n\n${ALDERSON_EXAMPLE}` : ''}`;
 }
