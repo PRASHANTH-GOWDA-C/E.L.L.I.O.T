@@ -1,0 +1,35 @@
+:root {
+  --bg: #0d1117;
+  --fg: #e6edf3;
+  --muted: #8b949e;
+  --accent: #3fb950;
+  --error: #f85149;
+  --panel: #161b22;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+
+main { padding: 16px; max-width: 640px; width: 100%; }
+h1 { color: var(--accent); margin-bottom: 0.25rem; }
+.subtitle { color: var(--muted); margin-top: 0; }
+h2 { font-size: 1rem; color: var(--muted); }
+
+pre {
+  background: var(--panel);
+  padding: 1rem;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+pre.ok { color: var(--accent); }
+pre.error { color: var(--error); }

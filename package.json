@@ -1,0 +1,19 @@
+{
+  "name": "elliot",
+  "version": "0.1.0",
+  "description": "E.L.L.I.O.T – Enhanced Logical Intelligence & Operational Technology. Offline-first AI coding companion.",
+  "type": "module",
+  "main": "app/server/index.js",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node app/server/index.js",
+    "dev": "node --watch app/server/index.js"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.10",
+    "express": "^5.3.0"
+  }
+}
