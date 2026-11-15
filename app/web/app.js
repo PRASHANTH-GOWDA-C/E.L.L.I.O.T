@@ -1,16 +1,16 @@
-const out = document.getElementById('health');
-
-async function checkHealth() {
+async function showJson(url, elementId) {
+  const out = document.getElementById(elementId);
   try {
-    const res = await fetch('/api/health');
+    const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     out.textContent = JSON.stringify(data, null, 2);
     out.className = 'ok';
   } catch (err) {
-    out.textContent = `Health check failed: ${err.message}`;
+    out.textContent = `${url} failed: ${err.message}`;
     out.className = 'error';
   }
 }
 
-checkHealth();
+showJson('/api/health', 'health');
+showJson('/api/models', 'models');
