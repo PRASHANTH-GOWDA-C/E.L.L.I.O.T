@@ -15,7 +15,7 @@
 ![node](https://img.shields.io/badge/Node.js-20%2B-green)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
-[Features](#-features) · [Models](#-models) · [Architecture](#%EF%B8%8F-architecture) · [Plugins](#-plugins-tools) · [Terminal](#-elliot-terminal) · [Edward](edward/README.md) · [Roadmap](#%EF%B8%8F-roadmap)
+[Features](#-features) · [Models](#-models) · [CLI](#%EF%B8%8F-the-elliot-command) · [Architecture](#%EF%B8%8F-architecture) · [Plugins](#-plugins-tools) · [Edward](edward/README.md) · [Roadmap](#%EF%B8%8F-roadmap)
 
 </div>
 
@@ -24,6 +24,8 @@
 ## 📖 What is Elliot?
 
 Elliot is a personal AI companion that runs **entirely from a USB pendrive**. It writes and reviews code, works with your files, remembers your projects, and works **without internet**. At hackathons, flip one switch and Elliot goes **online** for stronger cloud models.
+
+Elliot is a **command-line tool**: type `elliot` in any terminal, like `vim` or `git`.
 
 | Part | Role |
 |---|---|
@@ -108,7 +110,7 @@ All local models run through **Ollama**. Elliot keeps **three loaded at once** a
 ## 🏗️ Architecture
 
 ```
-You ──► Elliot app (Node.js · browser chat UI · E.L.L.I.O.T Terminal)
+You ──► `elliot` CLI (Node.js · Ink full-screen terminal UI · one-shot commands)
           │
           ├── Personality ── Ponytail coding rules
           ├── Router ─────── coder / tools / reasoning / vision model
@@ -118,8 +120,11 @@ You ──► Elliot app (Node.js · browser chat UI · E.L.L.I.O.T Terminal)
           │
           ├── Plugins ────── MCP tools (files, git, docs, nmap, GPG…)
           ├── Memory ─────── SQLite + nomic-embed search
+          ├── Local API ──── small HTTP server, only for Edward / the phone
           └── Edward ─────── face / ears / voice over USB or Wi-Fi
 ```
+
+The core (models, memory, tools) lives in one place and is shared by the CLI and the local API.
 
 Elliot talks to every model through one **OpenAI-compatible** client, so switching between offline and online changes only one URL.
 
@@ -157,13 +162,24 @@ Elliot uses **MCP (Model Context Protocol)** for plugins. Each tool is a small s
 
 ---
 
-## 🖥️ Elliot Terminal
+## ⌨️ The `elliot` command
 
-| Level | What it is |
+Elliot runs **inside any terminal** (PowerShell, cmd, VS Code, WSL), from whatever folder you're in, so he always sees the project you're working on.
+
+| Command | What it does |
 |---|---|
-| **1. Themed terminal** | Windows Terminal profile: Elliot icon, cyan-on-black theme, `elliot@pendrive:~$` prompt, ASCII banner |
-| **2. `elliot` CLI** | `elliot` (chat in the terminal), `elliot review`, `elliot run`, `!cmd` passthrough |
-| **3. E.L.L.I.O.T Terminal app** | Own terminal program: **Electron/Tauri + xterm.js + node-pty**, real shell plus an Elliot side panel that explains errors and writes commands (run only after you confirm) |
+| `elliot` | Opens Elliot full-screen in the terminal (chat, streaming replies) |
+| `elliot ask "…"` | One quick answer, then back to your shell |
+| `elliot review` | Reviews your current git changes |
+| `elliot audit` | Reviews the whole project, most important first |
+| `elliot fix <file>` | Proposes a fix as a diff; applies it only if you press `y` |
+| `<command> 2>&1 \| elliot explain` | Explains piped error output |
+| `elliot models` | Shows which models are installed and loaded |
+| `elliot online` / `elliot offline` | Switches hackathon mode on or off |
+
+**Inside full-screen mode:** `Enter` to send · `Esc` to stop a reply · `j`/`k` or arrows to scroll · `/review`, `/audit`, `/debt` commands · `:q` to quit.
+
+Built with **Ink** (React for terminals). Installed on the laptop with `npm link`; the pendrive has its own launcher.
 
 ---
 
@@ -188,7 +204,8 @@ Elliot uses **MCP (Model Context Protocol)** for plugins. Each tool is a small s
 E.L.L.I.O.T/
 ├── start-elliot.bat        ← double-click to start
 ├── elliot/
-│   ├── app/                ← Elliot's app (bundled, no node_modules)
+│   ├── app/                ← Elliot's code (bundled, no node_modules)
+│   ├── bin/                ← `elliot` launcher
 │   ├── models/             ← Ollama models
 │   ├── runtime/            ← portable Ollama, Node.js
 │   ├── voice/              ← Parakeet / Whisper / Piper
@@ -204,7 +221,7 @@ E.L.L.I.O.T/
 1. Plug in the pendrive.
 2. Double-click **`start-elliot.bat`**.
 3. Wait for the models to preload (1–4 min, depending on drive speed).
-4. Chat opens at `http://localhost:3000`.
+4. Open any terminal and type **`elliot`**.
 
 ```bat
 @echo off
@@ -212,7 +229,8 @@ set OLLAMA_MODELS=%~d0\elliot\models
 set OLLAMA_KEEP_ALIVE=-1
 set OLLAMA_MAX_LOADED_MODELS=3
 start "" /min "%~d0\elliot\runtime\ollama\ollama.exe" serve
-start "" "%~d0\elliot\app\elliot.exe"
+set PATH=%~d0\elliot\runtime\node;%~d0\elliot\bin;%PATH%
+start "" cmd /k "cd /d %USERPROFILE% && elliot"
 ```
 
 The script uses relative paths, so it works whatever drive letter Windows assigns.
@@ -248,14 +266,14 @@ Secrets live in `.env` (git-ignored). The terminal is never exposed publicly; us
 
 - [ ] Portable Ollama + core models on the pendrive
 - [ ] Start script + Node.js backend
-- [ ] Browser chat UI with streaming replies
+- [ ] `elliot` CLI: full-screen terminal UI with streaming replies
 - [ ] Memory (SQLite) + "continue where we left off"
 - [ ] File tools with diff + confirmation
 - [ ] Ponytail rules + `/review`, `/audit`, `/debt`
 - [ ] **Elliot v1** 🎉
 - [ ] Hackathon mode (OmniRoute + encrypted keys)
 - [ ] MCP plugin system + offline docs
-- [ ] `elliot` CLI → E.L.L.I.O.T Terminal app
+- [ ] One-shot commands: `ask`, `fix`, `explain` (piped input)
 - [ ] Voice (Parakeet / Whisper + Piper + wake word)
 - [ ] Elliot Lite on the Galaxy A10
 - [ ] Edward integration (see [Edward roadmap](edward/README.md#%EF%B8%8F-roadmap))
@@ -274,7 +292,7 @@ Secrets live in `.env` (git-ignored). The terminal is never exposed publicly; us
 
 ## 🙏 Built with
 
-[Ollama](https://ollama.com) · [llama.cpp](https://github.com/ggml-org/llama.cpp) · [OmniRoute](https://github.com/diegosouzapw/OmniRoute) · [Ponytail](https://github.com/DietrichGebert/ponytail) · [Qwen](https://ollama.com/library/qwen2.5-coder) · [DeepSeek](https://ollama.com/library/deepseek-r1) · [Piper](https://github.com/rhasspy/piper) · [Whisper](https://github.com/openai/whisper) · [xterm.js](https://xtermjs.org)
+[Ollama](https://ollama.com) · [llama.cpp](https://github.com/ggml-org/llama.cpp) · [OmniRoute](https://github.com/diegosouzapw/OmniRoute) · [Ponytail](https://github.com/DietrichGebert/ponytail) · [Qwen](https://ollama.com/library/qwen2.5-coder) · [DeepSeek](https://ollama.com/library/deepseek-r1) · [Piper](https://github.com/rhasspy/piper) · [Whisper](https://github.com/openai/whisper) · [Ink](https://github.com/vadimdemedes/ink)
 
 ---
 
