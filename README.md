@@ -10,7 +10,7 @@
 
 *Plug it into any laptop → Elliot wakes up, remembers you, and helps you build.*
 
-![status](https://img.shields.io/badge/status-in%20development-orange)
+![status](https://img.shields.io/badge/status-v0.1.0%20(v1)-brightgreen)
 ![offline](https://img.shields.io/badge/mode-offline%20first-blue)
 ![node](https://img.shields.io/badge/Node.js-22%2B-green)
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
@@ -18,6 +18,29 @@
 [Features](#-features) · [Models](#-models) · [CLI](#%EF%B8%8F-the-elliot-command) · [Architecture](#%EF%B8%8F-architecture) · [Plugins](#-plugins-tools) · [Edward](edward/README.md) · [Roadmap](#%EF%B8%8F-roadmap)
 
 </div>
+
+---
+
+## ✅ What works today (v1)
+
+Everything below runs offline on a CPU-only laptop with [Ollama](https://ollama.com). Run `elliot --help` for the full list.
+
+| Command | Example |
+|---|---|
+| Full-screen chat (continues where you left off) | `elliot` |
+| One answer, streamed | `elliot ask "How do I paginate a MySQL query in Node?"` |
+| Explain an error | `npm test 2>&1 \| elliot explain` |
+| Propose an edit as a diff, write only on `y` | `elliot edit "fix the off-by-one bug in src/cart.js"` |
+| Read / search / list project files | `elliot read src/cart.js` · `elliot find "TODO"` · `elliot ls "*.js"` |
+| Review changes (Ponytail rules) | `elliot review` · `elliot review staged` · `elliot review src/app.js` |
+| Review the whole project, worst first | `elliot audit` |
+| Shortcut ledger | `elliot debt` |
+| Remember facts about a project | `elliot remember "stack: Node + MySQL"` · `elliot facts` |
+| Past conversations | `elliot history` · `elliot resume 12` |
+| Health checks | `elliot doctor` · `elliot models` · `elliot version` |
+| One-click start (Windows / Linux) | double-click `start-elliot.bat` · `bash start-elliot.sh` |
+
+Not in v1 yet: hackathon (online) mode, MCP plugins, voice, Elliot Lite and Edward — see the [roadmap](#%EF%B8%8F-roadmap).
 
 ---
 
@@ -170,15 +193,18 @@ Elliot runs **inside any terminal** (PowerShell, cmd, VS Code, WSL), from whatev
 |---|---|
 | `elliot` | Opens Elliot full-screen in the terminal (chat, streaming replies) |
 | `elliot ask "…"` | One quick answer, then back to your shell |
-| `elliot review` | Reviews your current git changes |
-| `elliot audit` | Reviews the whole project, most important first |
-| `elliot fix <file>` | Proposes a fix as a diff; applies it only if you press `y` |
+| `elliot review [target]` | Reviews your git changes (uncommitted, staged, branch or a file) |
+| `elliot audit` | Reviews the most important project files, worst first |
+| `elliot debt` | Lists `shortcut:` comments to pay back |
+| `elliot edit "…"` | Proposes a change as a diff; applies it only if you press `y` |
+| `elliot read` / `find` / `ls` | Reads, searches and lists project files (inside the current folder only) |
 | `<command> 2>&1 \| elliot explain` | Explains piped error output |
-| `elliot models` | Shows which models are installed and loaded |
+| `elliot remember` / `facts` / `history` / `resume` | Project memory and past conversations |
+| `elliot models` | Shows which models are installed (with a live test) |
 | `elliot doctor` | One health report: Node, Ollama, models, memory database, current project |
-| `elliot online` / `elliot offline` | Switches hackathon mode on or off |
+| `elliot online` / `elliot offline` | *(planned)* Switches hackathon mode on or off |
 
-**Inside full-screen mode:** `Enter` to send · `Esc` to stop a reply · `j`/`k` or arrows to scroll · `/review`, `/audit`, `/debt` commands · `:q` to quit.
+**Inside full-screen mode:** `Enter` to send · `Esc` to stop a reply (or go to NORMAL mode) · `j`/`k` or arrows to scroll · `/review`, `/audit`, `/debt`, `/edit`, `/remember`, `/model`, `/voice`, `/help` · `:q` to quit.
 
 Built with **Ink** (React for terminals). Installed on the laptop with `npm link`; the pendrive has its own launcher.
 
@@ -281,16 +307,16 @@ Secrets live in `.env` (git-ignored). The terminal is never exposed publicly; us
 
 ## 🗺️ Roadmap
 
-- [ ] Portable Ollama + core models on the pendrive
-- [ ] Start script + Node.js backend
-- [ ] `elliot` CLI: full-screen terminal UI with streaming replies
-- [ ] Memory (SQLite) + "continue where we left off"
-- [ ] File tools with diff + confirmation
-- [ ] Ponytail rules + `/review`, `/audit`, `/debt`
-- [ ] **Elliot v1** 🎉
+- [ ] Portable Ollama + core models on the pendrive *(the start script already uses `elliot\runtime` and `elliot\models` when present)*
+- [x] Start script + Node.js backend
+- [x] `elliot` CLI: full-screen terminal UI with streaming replies
+- [x] Memory (SQLite) + "continue where we left off"
+- [x] File tools with diff + confirmation
+- [x] Ponytail rules + `/review`, `/audit`, `/debt`
+- [x] One-shot commands: `ask`, `edit`, `explain` (piped input)
+- [x] **Elliot v1** 🎉 (v0.1.0 — see [CHANGELOG](CHANGELOG.md))
 - [ ] Hackathon mode (OmniRoute + encrypted keys)
 - [ ] MCP plugin system + offline docs
-- [ ] One-shot commands: `ask`, `fix`, `explain` (piped input)
 - [ ] Voice (Parakeet / Whisper + Piper + wake word)
 - [ ] Elliot Lite on the Galaxy A10
 - [ ] Edward integration (see [Edward roadmap](edward/README.md#%EF%B8%8F-roadmap))

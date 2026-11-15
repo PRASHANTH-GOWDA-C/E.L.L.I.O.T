@@ -16,7 +16,8 @@
     "dev": "node --watch app/server/index.js",
     "check": "node scripts/check.js",
     "test": "node --test",
-    "setup": "node scripts/setup.js"
+    "setup": "node scripts/setup.js",
+    "e2e": "node scripts/e2e.js"
   },
   "dependencies": {
     "better-sqlite3": "^13.2.0",
@@ -30,5 +31,7 @@
   },
   "devDependencies": {
     "ink-testing-library": "^4.0.0"
-  }
+  },
+  "license": "MIT",
+  "author": "Prashanth"
 }

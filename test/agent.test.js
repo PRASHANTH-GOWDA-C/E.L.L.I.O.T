@@ -183,7 +183,7 @@ test('agent: pasted code instead of a tool call gets one reminder, then tools ar
   const events = [];
   const result = await runAgent({ instruction: 'say Hello in greet.js', files, chatFn, onEvent: (e) => events.push(e) });
   assert.deepEqual(events.map((e) => e.name), ['reminder', 'read_file', 'propose_edit']);
-  assert.match(chatFn.calls[1].messages.at(-1).content, /Do not paste code/);
+  assert.match(chatFn.calls[1].messages.at(-1).content, /do not paste code/i);
   assert.equal(result.proposals.length, 1);
   unchanged(root);
 });
@@ -200,7 +200,7 @@ test('agent: the reminder is sent only once', async (t) => {
 
 test('agent: system prompt is the tools variant (no code-answer examples)', async (t) => {
   const { files } = project(t);
-  const chatFn = scripted({ content: 'ok' });
+  const chatFn = scripted({ content: 'ok' }, { content: 'ok' }); // second reply answers the reminder
   await runAgent({ instruction: 'hi', files, chatFn });
   const system = chatFn.calls[0].messages[0].content;
   assert.match(system, /you MUST call read_file first, then propose_edit/);
@@ -228,4 +228,86 @@ test('agent: an unparseable text call naming a real tool is reported back, not i
   await runAgent({ instruction: 'read', files, chatFn, onEvent: (e) => events.push(e) });
   assert.deepEqual(events.map((e) => [e.name, e.ok]), [['read_file', false]]);
   assert.match(chatFn.calls[1].messages.at(-1).content, /BAD_TOOL_CALL/);
+});
+
+// ---- Syntax guard ------------------------------------------------------------------
+
+test('syntax: checkSyntax reports broken JS and accepts ESM, CommonJS and non-JS files', async () => {
+  const { checkSyntax } = await import('../app/core/tools/syntax.js');
+  assert.equal(checkSyntax('a.js', 'export const x = 1;\n'), null);
+  assert.equal(checkSyntax('a.js', 'module.exports = require("x");\n'), null);
+  assert.equal(checkSyntax('a.cjs', 'module.exports = 1;\n'), null);
+  assert.match(checkSyntax('a.js', 'export function f() {\n  return 1;\n'), /SyntaxError: Unexpected end of input \(line \d+\)/);
+  assert.equal(checkSyntax('a.ts', 'let x: number = {'), null, 'TypeScript is not checked');
+  assert.equal(checkSyntax('notes.md', '{{{'), null);
+});
+
+test('agent: an edit that breaks the syntax is refused and the model can retry', async (t) => {
+  const { root, files } = project(t);
+  const chatFn = scripted(
+    nativeCall('read_file', { path: 'greet.js' }),
+    // Loses the closing brace — what qwen2.5-coder:7b really did in the v1 end-to-end run.
+    nativeCall('propose_edit', { path: 'greet.js', old_text: '  return `Hi ${name}`;\n}\n', new_text: '  return `Hello ${name}`;\n' }),
+    nativeCall('propose_edit', { path: 'greet.js', old_text: '  return `Hi ${name}`;', new_text: '  return `Hello ${name}`;' }),
+  );
+  const events = [];
+  const result = await runAgent({ instruction: 'say Hello', files, chatFn, onEvent: (e) => events.push(e) });
+  assert.deepEqual(events.map((e) => [e.name, e.ok]), [['read_file', true], ['propose_edit', false], ['propose_edit', true]]);
+  assert.match(events[1].error, /would break greet\.js: SyntaxError/);
+  assert.equal(result.proposals.length, 1);
+  assert.match(result.proposals[0].newContent, /Hello \$\{name\}`;\n\}\n$/);
+  unchanged(root);
+});
+
+test('agent: the syntax guard does not block edits to a file that was already broken', async (t) => {
+  const { root, files } = project(t);
+  fs.writeFileSync(path.join(root, 'greet.js'), 'export function greet(name) {\n  return `Hi ${name}`;\n'); // already broken
+  const chatFn = scripted(nativeCall('propose_edit', { path: 'greet.js', old_text: 'Hi', new_text: 'Hello' }));
+  const result = await runAgent({ instruction: 'say Hello', files, chatFn });
+  assert.equal(result.proposals.length, 1);
+});
+
+test('agent: a bare tool call after prose is understood (real qwen2.5-coder reply)', async (t) => {
+  const { files } = project(t);
+  // Verbatim shape from the v1 end-to-end run.
+  const prose = 'I will first read the file and then propose an edit.\n\n{"name": "read_file", "arguments": {"path": "greet.js"}}';
+  const chatFn = scripted(
+    { content: prose },
+    { content: 'Here is the fix.\n{"name": "propose_edit", "arguments": {"path": "greet.js", "old_text": "Hi", "new_text": "Hello"}}' },
+  );
+  const events = [];
+  const result = await runAgent({ instruction: 'say Hello', files, chatFn, onEvent: (e) => events.push(e) });
+  assert.deepEqual(events.map((e) => [e.name, e.ok]), [['read_file', true], ['propose_edit', true]]);
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.answer, 'Here is the fix.', 'the JSON is removed from the shown answer');
+});
+
+test('agent: prose that merely mentions JSON with an unknown "name" is not a tool call', () => {
+  const { calls } = parseToolCalls({ content: 'Your package.json has {"name": "shop", "type": "module"} — fine.' });
+  assert.deepEqual(calls, []);
+});
+
+test('agent: answering without using any tool gets one reminder (real qwen2.5-coder reply)', async (t) => {
+  const { files } = project(t);
+  const chatFn = scripted(
+    { content: 'Please provide the file contents of `greet.js` so I can analyze it.' },
+    nativeCall('read_file', { path: 'greet.js' }),
+    nativeCall('propose_edit', { path: 'greet.js', old_text: 'Hi', new_text: 'Hello' }),
+  );
+  const events = [];
+  const result = await runAgent({ instruction: 'say Hello in greet.js', files, chatFn, onEvent: (e) => events.push(e) });
+  assert.deepEqual(events.map((e) => e.name), ['reminder', 'read_file', 'propose_edit']);
+  assert.match(chatFn.calls[1].messages.at(-1).content, /read the project files yourself/);
+  assert.equal(result.proposals.length, 1);
+});
+
+test('agent: a stray brace after a bare tool call is not shown as the answer', async (t) => {
+  const { files } = project(t);
+  const chatFn = scripted(
+    nativeCall('read_file', { path: 'greet.js' }),
+    { content: '{"name": "propose_edit", "arguments": {"path": "greet.js", "old_text": "Hi", "new_text": "Hello"}}\n}' },
+  );
+  const result = await runAgent({ instruction: 'say Hello', files, chatFn });
+  assert.equal(result.proposals.length, 1);
+  assert.equal(result.answer, '');
 });

@@ -19,44 +19,48 @@ const ROLES = ['coder', 'fast', 'reason'];
 
 const HELP = `E.L.L.I.O.T v${config.version} – offline coding companion
 
-Usage:
-  elliot                         Open the full-screen chat (continues this project's last chat)
-  elliot ask "<question>"        Ask Elliot; the answer streams as it arrives
-  <command> | elliot ask "<q>"   Include piped output as context
-  <command> | elliot explain     Explain piped output and how to fix it (not saved)
-  elliot history                 List this project's past conversations
-  elliot resume <id>             Open the full-screen chat on conversation <id>
-  elliot remember "key: value"   Save a note about this project
-  elliot facts                   List this project's notes
-  elliot models                  Check Ollama and the required models
-  elliot doctor                  Health report: Node, Ollama, models, memory, project
+Chat
+  elliot                         Full-screen chat (continues this project's last chat)
+  elliot ask "<question>"        One answer, streamed; pipe output in for context
+  <command> 2>&1 | elliot explain
+                                 Explain piped output and how to fix it (not saved)
 
-Files (only inside the current folder; nothing is written without your y):
+Code (only inside the current folder; nothing is written without your y)
   elliot edit "<instruction>"    Elliot proposes a change, shows the diff, asks y/N
   elliot read <file>             Print a project file
   elliot find "<text>"           Search project files (file:line: text)
   elliot ls [glob]               List project files (respects .gitignore)
 
-Review (Ponytail rules; advice only):
+Review (Ponytail rules; advice only)
   elliot review [target]         Review changes: uncommitted (default) | staged | branch | <file>
   elliot audit                   Review the most important project files, worst first
   elliot debt [word]             List "shortcut:" comments (or another word) to pay back
 
-Options:
+Memory (per project folder)
+  elliot remember "key: value"   Save a note Elliot will always know here
+  elliot facts                   List this project's notes
+  elliot history                 List this project's past conversations
+  elliot resume <id>             Open the full-screen chat on conversation <id>
+
+System
+  elliot models                  Check Ollama and the models (with a live test)
+  elliot doctor                  Health report: Node, Ollama, models, memory, project
+  elliot version                 Version, Elliot folder and mode
+
+Options
   -m, --model <role>             coder, fast or reason (default: chosen automatically)
       --voice <voice>            plain or alderson (default: ELLIOT_VOICE or plain)
-      --new                      Start a new conversation instead of continuing
+      --new                      ask / chat: start a new conversation
       --yes                      edit: apply proposed changes without asking
   -h, --help                     Show this help
-  -v, --version                  Show the version
+  -v, --version                  Show the version number
 
-Examples:
-  elliot --voice alderson
-  elliot remember "stack: Node + MySQL"
-  elliot edit "add input validation to parseUser in src/users.js"
+Examples
   elliot ask "Write a JS function that reverses a string"
-  npm test 2>&1 | elliot ask -m reason "what broke?"
-  node app.js 2>&1 | elliot explain`;
+  npm test 2>&1 | elliot ask "what broke?"
+  elliot edit "add input validation to parseUser in src/users.js"
+  elliot review
+  elliot remember "stack: Node + MySQL"`;
 
 const useColor = process.stderr.isTTY && !process.env.NO_COLOR;
 const dim = (text) => (useColor ? `\x1b[2m${text}\x1b[22m` : text);
@@ -189,7 +193,7 @@ async function explain(positionals, opts) {
 
 async function fullScreen({ role, voice, fresh, conversationId }) {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new UsageError('full-screen mode needs an interactive terminal — try: elliot ask "hello"');
+    throw new UsageError('the full-screen chat needs an interactive terminal — try: elliot ask "hello"');
   }
   // Loaded lazily so `elliot ask` doesn't pay for React/Ink startup.
   const { runTui } = await import('./tui/index.js');
@@ -477,7 +481,11 @@ async function main(argv) {
       },
     });
   } catch (err) {
-    throw new UsageError(err.message);
+    // Node's messages are long; keep them to one short line.
+    const option = err.message.match(/option '([^']+)'/i)?.[1];
+    if (err.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' && option) throw new UsageError(`unknown option ${option} — run elliot --help`);
+    if (err.code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE' && option) throw new UsageError(`option ${option} needs a value — run elliot --help`);
+    throw new UsageError(`${err.message.split('. ')[0]} — run elliot --help`);
   }
 
   const { values, positionals } = parsed;
@@ -502,7 +510,17 @@ async function main(argv) {
   const [command, ...rest] = positionals;
   switch (command) {
     case undefined:
+      // Piped or scripted (no terminal): the full-screen UI can't run, so show help.
+      if (!process.stdin.isTTY || !process.stdout.isTTY) {
+        console.log(HELP);
+        return 0;
+      }
       return fullScreen(opts);
+    case 'version':
+      console.log(`E.L.L.I.O.T ${config.version}`);
+      console.log(`folder: ${config.paths.root} (${config.paths.layout} layout)`);
+      console.log(`mode:   ${config.aiMode} · Node ${process.versions.node}`);
+      return 0;
     case 'ask':
       return ask(rest, opts);
     case 'explain':
@@ -541,14 +559,27 @@ async function main(argv) {
   }
 }
 
+/** One line for every error; the stack only with ELLIOT_DEBUG=1. */
+function reportError(err) {
+  if (err instanceof LlmError || err instanceof UsageError || err instanceof ReviewError) {
+    console.error(`elliot: ${err.message}`);
+  } else {
+    console.error(`elliot: unexpected error: ${err?.message ?? err}${process.env.ELLIOT_DEBUG ? '' : ' (set ELLIOT_DEBUG=1 for details)'}`);
+    if (process.env.ELLIOT_DEBUG) console.error(err);
+  }
+}
+
+// Safety net: errors escaping from callbacks or streams still get one line, not a stack trace.
+for (const event of ['uncaughtException', 'unhandledRejection']) {
+  process.on(event, (err) => {
+    reportError(err);
+    process.exit(1);
+  });
+}
+
 try {
   process.exitCode = await main(process.argv.slice(2));
 } catch (err) {
-  if (err instanceof LlmError || err instanceof UsageError) {
-    console.error(`elliot: ${err.message}`);
-  } else {
-    console.error(`elliot: unexpected error: ${err.message}`);
-    if (process.env.ELLIOT_DEBUG) console.error(err);
-  }
+  reportError(err);
   process.exitCode = err instanceof UsageError ? 2 : 1;
 }

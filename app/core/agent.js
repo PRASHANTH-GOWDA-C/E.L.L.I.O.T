@@ -11,6 +11,7 @@
 import config from './config.js';
 import { LlmError, chat, chatWithTools } from './llm.js';
 import { buildSystemPrompt } from './persona.js';
+import { checkSyntax } from './tools/syntax.js';
 
 const MAX_ITERATIONS = 6;
 const MAX_TOOL_FILE_CHARS = 8_000; // keeps tool results inside a small context window
@@ -81,9 +82,10 @@ Tools: you can look at and change files in this project with read_file, list_fil
 - propose_edit does NOT write anything. The user reviews a diff and decides. Never claim that a file was changed.
 - Call one tool at a time. When you have proposed the edit, stop and summarise it in one sentence.`;
 
-// Sent once if the model answers an edit request with pasted code instead of tools.
+// Sent once if the model pastes code or asks for files instead of using the tools.
 const USE_TOOLS_NUDGE =
-  'Do not paste code. Use the tools: call read_file on the file, then propose_edit with the change. Reply with a tool call only.';
+  'You can read the project files yourself, so do not ask me for them, and do not paste code. ' +
+  'Call read_file on the file, then propose_edit with the change. Reply with a tool call only.';
 
 // ---- Lenient parsing ---------------------------------------------------------
 
@@ -177,6 +179,13 @@ export function parseToolCalls(message) {
   for (const m of content.matchAll(/<tool_call>([\s\S]*?)<\/tool_call>/g)) candidates.push(m[1]);
   for (const m of content.matchAll(/```(?:json|tool_call)?\s*\n([\s\S]*?)```/g)) candidates.push(m[1]);
   if (candidates.length === 0 && /^\s*[[{]/.test(content)) candidates.push(content);
+  if (candidates.length === 0) {
+    // A bare call after some prose: 'I will read it.\n{"name": "read_file", …}'.
+    for (const m of content.matchAll(/\{\s*"(?:name|function|tool)"\s*:/g)) {
+      const object = firstBalanced(content.slice(m.index));
+      if (object) candidates.push(object);
+    }
+  }
 
   const calls = [];
   for (const candidate of candidates) {
@@ -199,10 +208,15 @@ export function parseToolCalls(message) {
 
 /** Reply text with any written-out tool calls removed (they're not meant for the user). */
 function stripToolText(content) {
-  const stripped = content
-    .replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '')
-    .replace(/```(?:json|tool_call)?\s*\n[\s\S]*?```/g, '')
-    .trim();
+  let stripped = content.replace(/<tool_call>[\s\S]*?<\/tool_call>/g, '').replace(/```(?:json|tool_call)?\s*\n[\s\S]*?```/g, '');
+  // Bare call objects after prose.
+  for (let m; (m = stripped.match(/\{\s*"(?:name|function|tool)"\s*:/)); ) {
+    const object = firstBalanced(stripped.slice(m.index));
+    if (!object) break;
+    stripped = stripped.slice(0, m.index) + stripped.slice(m.index + object.length);
+  }
+  // Leftover brace-only lines (models often add an extra "}" after a call).
+  stripped = stripped.replace(/^[\s{}[\]]+$/gm, '').trim();
   return /^\s*[[{]/.test(stripped) ? '' : stripped;
 }
 
@@ -242,6 +256,7 @@ export async function runAgent({
 
   const system = { role: 'system', content: `${buildSystemPrompt({ cwd, voice, facts, mode: 'tools' })}\n${TOOL_INSTRUCTIONS}` };
   let nudged = false;
+  let toolCallsSeen = 0;
   const messages = [system, { role: 'user', content: instruction }];
   const proposals = [];
   // Files read in full during this run; full-content rewrites are only allowed for these.
@@ -303,6 +318,20 @@ export async function runAgent({
     const proposal = files.proposeEdit(args.path, newContent);
     if (!proposal.ok) return proposal;
     if (!proposal.changed) return { ok: false, code: 'NO_CHANGE', error: 'the proposed content is identical to the file' };
+
+    // Never show an edit that breaks a file which parsed before (e.g. a lost closing brace).
+    const broken = checkSyntax(proposal.path, proposal.newContent);
+    if (broken) {
+      const before = files.readFile(proposal.path);
+      const wasValid = !before.ok || checkSyntax(proposal.path, before.content) === null;
+      if (wasValid) {
+        return {
+          ok: false,
+          code: 'SYNTAX_ERROR',
+          error: `this edit would break ${proposal.path}: ${broken}. Keep every other line (including closing braces) and call propose_edit again.`,
+        };
+      }
+    }
     proposals.push(proposal);
     return { ok: true, message: 'Diff shown to the user. Waiting for their decision; nothing was written. Do not call more tools.' };
   }
@@ -329,15 +358,18 @@ export async function runAgent({
     lastContent = typeof message.content === 'string' ? message.content : '';
     const { calls, native } = parseToolCalls(message);
     if (calls.length === 0) {
-      // Pasted code instead of proposing it? Remind it once to use the tools.
-      if (!nudged && proposals.length === 0 && lastContent.includes('```') && i + 1 < maxIterations) {
+      // Pasted code, or answered without looking at any file (e.g. "please send me the file")?
+      // Remind it once that it has tools.
+      const skippedTools = toolCallsSeen === 0 || lastContent.includes('```');
+      if (!nudged && proposals.length === 0 && skippedTools && i + 1 < maxIterations) {
         nudged = true;
         messages.push({ role: 'assistant', content: lastContent }, { role: 'user', content: USE_TOOLS_NUDGE });
-        onEvent({ type: 'tool', name: 'reminder', summary: 'asked the model to use propose_edit instead of pasting code', ok: true });
+        onEvent({ type: 'tool', name: 'reminder', summary: 'asked the model to use its file tools', ok: true });
         continue;
       }
       return { answer: lastContent, proposals, fallback: false };
     }
+    toolCallsSeen += calls.length;
 
     // Record the assistant turn, then each tool result.
     if (native) {
