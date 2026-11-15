@@ -9,7 +9,7 @@ const STREAM_IDLE_TIMEOUT_MS = 60_000; // max silence between streamed chunks
 
 export class LlmError extends Error {
   /**
-   * @param {'OLLAMA_OFFLINE'|'MODEL_MISSING'|'TIMEOUT'|'ABORTED'|'BAD_RESPONSE'} code
+   * @param {'OLLAMA_OFFLINE'|'MODEL_MISSING'|'TIMEOUT'|'ABORTED'|'BAD_RESPONSE'|'TOOLS_UNSUPPORTED'} code
    */
   constructor(code, message, { model, cause } = {}) {
     super(message, { cause });
@@ -117,6 +117,43 @@ export async function chat({ model, messages, timeoutMs = CHAT_TIMEOUT_MS }) {
     throw new LlmError('BAD_RESPONSE', 'Chat response did not contain a message', { model });
   }
   return reply;
+}
+
+/**
+ * One non-streaming chat turn with OpenAI-style tools.
+ * @param {{ model: string, messages: object[], tools: object[], signal?: AbortSignal, timeoutMs?: number }} opts
+ * @returns {Promise<{ content: string|null, tool_calls?: object[] }>} the assistant message
+ * @throws {LlmError} codes as chat(), plus 'TOOLS_UNSUPPORTED' and 'ABORTED'
+ */
+export async function chatWithTools({ model, messages, tools, signal, timeoutMs = CHAT_TIMEOUT_MS }) {
+  validateChatArgs(model, messages);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  let res;
+  try {
+    res = await fetch(`${config.ollamaUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, tools, stream: false }),
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+  } catch (err) {
+    if (signal?.aborted) throw new LlmError('ABORTED', 'Stopped', { model, cause: err });
+    if (timeout.aborted) throw new LlmError('TIMEOUT', `No reply from ${model} within ${timeoutMs / 1000}s`, { model, cause: err });
+    throw offlineError(err);
+  }
+
+  const body = await res.json().catch(() => null);
+  if (!res.ok) {
+    const detail = String(body?.error?.message ?? body?.error ?? '');
+    if (/does not support tools/i.test(detail)) {
+      throw new LlmError('TOOLS_UNSUPPORTED', `${model} does not support tool calls`, { model });
+    }
+    if (res.status === 404 || /not found|try pulling/i.test(detail)) throw missingModelError(model);
+    throw new LlmError('BAD_RESPONSE', `Chat request failed (HTTP ${res.status})${detail ? `: ${detail}` : ''}`, { model });
+  }
+  const message = body?.choices?.[0]?.message;
+  if (!message) throw new LlmError('BAD_RESPONSE', 'Chat response did not contain a message', { model });
+  return message;
 }
 
 /**

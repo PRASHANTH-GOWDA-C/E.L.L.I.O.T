@@ -160,3 +160,29 @@ export function formatFacts(facts) {
   const width = Math.max(...facts.map((f) => f.key.length));
   return facts.map((f) => `  ${f.key.padEnd(width)}  ${f.value}`).join('\n');
 }
+
+// ---- Diffs ---------------------------------------------------------------------
+
+/** Kind of a unified-diff line, for colouring. */
+export function diffLineKind(line) {
+  if (line.startsWith('+++') || line.startsWith('---')) return 'header';
+  if (line.startsWith('@@')) return 'hunk';
+  if (line.startsWith('+')) return 'add';
+  if (line.startsWith('-')) return 'del';
+  if (line.startsWith('\\')) return 'meta'; // "\ No newline at end of file"
+  return 'context';
+}
+
+const DIFF_ANSI = { header: '\x1b[1m', hunk: '\x1b[36m', add: '\x1b[32m', del: '\x1b[31m', meta: '\x1b[2m', context: '' };
+
+/** Unified diff with ANSI colours (green +, red −, cyan @@). */
+export function colorizeDiff(diff, useColor = true) {
+  if (!useColor) return diff;
+  return diff
+    .split('\n')
+    .map((line) => {
+      const code = DIFF_ANSI[diffLineKind(line)];
+      return code ? `${code}${line}\x1b[0m` : line;
+    })
+    .join('\n');
+}

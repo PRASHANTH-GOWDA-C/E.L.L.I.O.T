@@ -5,8 +5,11 @@ import { LlmError, listModels } from '../core/llm.js';
 import { chooseModel } from '../core/router.js';
 import { Session } from '../core/session.js';
 import { runCheck } from '../core/check.js';
-import { NotCheckedFixer, formatFacts, formatHistory } from '../core/format.js';
+import readline from 'node:readline';
+import { NotCheckedFixer, colorizeDiff, formatFacts, formatHistory } from '../core/format.js';
 import { getMemory, parseFact, projectFor } from '../core/memory.js';
+import { createFileTools } from '../core/tools/files.js';
+import { runAgent } from '../core/agent.js';
 
 const MAX_PIPED_CHARS = 12_000; // keeps piped logs inside a small context window
 const EXPLAIN_PROMPT = 'Explain this output and how to fix it.';
@@ -25,16 +28,24 @@ Usage:
   elliot facts                   List this project's notes
   elliot models                  Check Ollama and the required models
 
+Files (only inside the current folder; nothing is written without your y):
+  elliot edit "<instruction>"    Elliot proposes a change, shows the diff, asks y/N
+  elliot read <file>             Print a project file
+  elliot find "<text>"           Search project files (file:line: text)
+  elliot ls [glob]               List project files (respects .gitignore)
+
 Options:
   -m, --model <role>             coder, fast or reason (default: chosen automatically)
       --voice <voice>            plain or alderson (default: ELLIOT_VOICE or plain)
       --new                      Start a new conversation instead of continuing
+      --yes                      edit: apply proposed changes without asking
   -h, --help                     Show this help
   -v, --version                  Show the version
 
 Examples:
   elliot --voice alderson
   elliot remember "stack: Node + MySQL"
+  elliot edit "add input validation to parseUser in src/users.js"
   elliot ask "Write a JS function that reverses a string"
   npm test 2>&1 | elliot ask -m reason "what broke?"
   node app.js 2>&1 | elliot explain`;
@@ -220,6 +231,141 @@ function facts() {
   return 0;
 }
 
+// ---- File commands -------------------------------------------------------------
+// Boolean(): isTTY is undefined (not false) when piped; undefined would trigger colorizeDiff's default.
+const useStdoutColor = Boolean(process.stdout.isTTY) && !process.env.NO_COLOR;
+
+/** Throws a UsageError for a failed tool result. */
+function check(result) {
+  if (!result.ok) throw new UsageError(result.error);
+  return result;
+}
+
+function read(positionals) {
+  if (!positionals[0]) throw new UsageError('read needs a file, e.g. elliot read src/index.js');
+  const file = check(createFileTools(process.cwd()).readFile(positionals[0]));
+  process.stdout.write(file.content.endsWith('\n') ? file.content : `${file.content}\n`);
+  return 0;
+}
+
+function find(positionals) {
+  const query = positionals.join(' ');
+  if (!query.trim()) throw new UsageError('find needs some text, e.g. elliot find "TODO"');
+  const { matches, truncated } = check(createFileTools(process.cwd()).searchFiles(query));
+  if (matches.length === 0) {
+    console.log('No matches.');
+    return 1;
+  }
+  for (const m of matches) console.log(`${m.path}:${m.line}: ${m.text}`);
+  if (truncated) console.error(dim('(more matches not shown)'));
+  return 0;
+}
+
+function ls(positionals) {
+  const { files, truncated } = check(createFileTools(process.cwd()).listFiles(positionals[0]));
+  for (const f of files) console.log(f);
+  if (files.length === 0) console.error(dim('No files.'));
+  if (truncated) console.error(dim('(list truncated)'));
+  return 0;
+}
+
+/**
+ * Asks y/N on the terminal. Returns true/false, or null when there is no
+ * terminal to ask (piped stdin) — callers must then NOT write.
+ */
+async function confirm(question) {
+  process.stderr.write(question);
+  if (!process.stdin.isTTY) {
+    process.stderr.write('\n');
+    return null;
+  }
+  const rl = readline.createInterface({ input: process.stdin, output: process.stderr });
+  try {
+    const answer = await new Promise((resolve) => {
+      rl.on('SIGINT', () => resolve('')); // Ctrl+C = no
+      rl.on('close', () => resolve(''));
+      rl.question('', resolve);
+    });
+    return /^y(es)?$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
+}
+
+async function edit(positionals, { role, voice }, { yes }) {
+  const instruction = positionals.join(' ').trim();
+  if (!instruction) throw new UsageError('edit needs an instruction, e.g. elliot edit "rename foo to bar in src/a.js"');
+
+  const files = createFileTools(process.cwd());
+  const model = config.models[role ?? 'coder'].name;
+  const facts = getMemory().getFacts(projectFor(process.cwd()));
+  process.stderr.write(dim(`${model} is looking at ${files.root} …\n`));
+
+  activeController = new AbortController();
+  let result;
+  try {
+    result = await runAgent({
+      instruction,
+      files,
+      model,
+      voice,
+      facts,
+      signal: activeController.signal,
+      onEvent: (e) => process.stderr.write(dim(`  → ${e.name} ${e.summary}${e.ok ? '' : `  ✖ ${e.error}`}\n`)),
+    });
+  } catch (err) {
+    if (err instanceof LlmError && err.code === 'ABORTED') {
+      process.stderr.write(`${dim('[stopped — nothing was written]')}\n`);
+      return 130;
+    }
+    throw err;
+  } finally {
+    activeController = null;
+  }
+
+  if (result.answer) console.log(`\n${result.answer.trim()}`);
+  if (result.proposals.length === 0) {
+    console.log(result.fallback ? '\n(This model cannot use file tools; no change was proposed.)' : '\nNo change proposed.');
+    return 0;
+  }
+
+  let exitCode = 0;
+  for (const proposal of result.proposals) {
+    const what = proposal.isNew ? 'new file' : `+${proposal.additions} −${proposal.deletions}`;
+    console.log(`\nProposed change to ${proposal.absolutePath} (${what})\n`);
+    console.log(colorizeDiff(proposal.diff.trimEnd(), useStdoutColor));
+    console.log();
+
+    let approved;
+    if (yes) {
+      process.stderr.write(dim('--yes given: applying without asking\n'));
+      approved = true;
+    } else {
+      approved = await confirm('Apply this change? [y/N] ');
+      if (approved === null) {
+        console.log('Not applied: no terminal to confirm. Run it in a terminal, or add --yes.');
+        exitCode = 1;
+        continue;
+      }
+    }
+    if (!approved) {
+      console.log('Not applied.');
+      continue;
+    }
+
+    // Safety rule: always show exactly where we write, before writing.
+    console.log(`Writing ${proposal.absolutePath}`);
+    const written = files.applyEdit(proposal.path, proposal.newContent, { confirmed: true, baseHash: proposal.baseHash });
+    if (written.ok) {
+      console.log(`✔ ${written.created ? 'Created' : 'Updated'} ${written.path} (${written.bytes} bytes)`);
+    } else {
+      console.error(`elliot: not written: ${written.error}`);
+      exitCode = 1;
+    }
+  }
+  return exitCode;
+}
+
 // ---- Entry point -------------------------------------------------------------
 async function main(argv) {
   let parsed;
@@ -233,6 +379,7 @@ async function main(argv) {
         model: { type: 'string', short: 'm' },
         voice: { type: 'string' },
         new: { type: 'boolean' },
+        yes: { type: 'boolean' },
       },
     });
   } catch (err) {
@@ -274,6 +421,14 @@ async function main(argv) {
       return remember(rest);
     case 'facts':
       return facts();
+    case 'edit':
+      return edit(rest, opts, { yes: values.yes ?? false });
+    case 'read':
+      return read(rest);
+    case 'find':
+      return find(rest);
+    case 'ls':
+      return ls(rest);
     case 'models':
       return runCheck();
     default:

@@ -11,7 +11,8 @@ const models = {
 const ALL = ['qwen2.5-coder:7b', 'qwen2.5-coder:1.5b', 'deepseek-r1:8b'];
 const CODER_ONLY = ['qwen2.5-coder:7b'];
 
-const route = (text, opts = {}) => chooseModel(text, { installed: ALL, models, ...opts });
+// Most tests exercise automatic reasoning (AUTO_REASON=true); the "off" tests are at the end.
+const route = (text, opts = {}) => chooseModel(text, { installed: ALL, models, autoReason: true, ...opts });
 
 const STACK = `TypeError: Cannot read properties of undefined (reading 'map')
     at renderList (/app/src/list.js:12:18)
@@ -83,4 +84,30 @@ test('router keeps short follow-ups to a code answer on the coder', () => {
 
 test('router handles empty input', () => {
   assert.equal(route('').role, 'coder');
+});
+
+test('AUTO_REASON off: reasoning questions go to coder even if the reason model is installed', () => {
+  for (const text of ['why is this O(n^2)?', 'help me debug this race condition', STACK]) {
+    const choice = route(text, { autoReason: false });
+    assert.equal(choice.role, 'coder', text);
+    assert.match(choice.reason, /AUTO_REASON off$/);
+  }
+  assert.deepEqual(route('why is this O(n^2)?', { autoReason: false }), {
+    role: 'coder',
+    model: 'qwen2.5-coder:7b',
+    reason: 'reasoning: "why", AUTO_REASON off',
+  });
+});
+
+test('AUTO_REASON off does not affect fast or coder choices', () => {
+  assert.equal(route('hi', { autoReason: false }).role, 'fast');
+  assert.equal(route('Write a JS function that reverses a string', { autoReason: false }).role, 'coder');
+});
+
+test('AUTO_REASON is off by default (config default)', async () => {
+  const { default: config } = await import('../app/core/config.js');
+  if (process.env.AUTO_REASON === undefined) assert.equal(config.autoReason, false);
+  // Without an explicit option the router follows config.
+  const choice = chooseModel('why is this slow?', { installed: ALL, models });
+  assert.equal(choice.role, config.autoReason ? 'reason' : 'coder');
 });

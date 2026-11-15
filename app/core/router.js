@@ -25,10 +25,14 @@ const LOOKS_LIKE_CODE = /```|`[^`]+`|[{};]|=>|\w\(.*\)|<\/?\w+>|^\s*(const|let|v
  *   history?: { role: string, content: string }[],
  *   installed?: string[] | null,  // installed model names; null = unknown
  *   models?: typeof config.models,
+ *   autoReason?: boolean,  // false = never pick "reason" automatically
  * }} [opts]
  * @returns {{ role: 'coder'|'fast'|'reason', model: string, reason: string }}
  */
-export function chooseModel(text, { history = [], installed = null, models = config.models } = {}) {
+export function chooseModel(
+  text,
+  { history = [], installed = null, models = config.models, autoReason = config.autoReason } = {},
+) {
   const pick = (role, reason) => ({ role, model: models[role].name, reason });
   // Unknown install state (e.g. Ollama unreachable): only the default is safe.
   const has = (role) => installed !== null && isModelInstalled(installed, models[role].name);
@@ -45,6 +49,7 @@ export function chooseModel(text, { history = [], installed = null, models = con
     if (match) reasonSignal = `"${match[0].toLowerCase()}"`;
   }
   if (reasonSignal) {
+    if (!autoReason) return pick('coder', `reasoning: ${reasonSignal}, AUTO_REASON off`);
     return has('reason')
       ? pick('reason', `reasoning: ${reasonSignal}`)
       : pick('coder', `reasoning: ${reasonSignal}, ${models.reason.name} not installed`);

@@ -78,3 +78,14 @@ test('changing a session voice rebuilds the system prompt and keeps history', ()
   assert.match(session.system.content, /terse and observant/);
   assert.equal(session.history.length, 2);
 });
+
+test('tools mode drops the code-answer format and examples but keeps rules and tone', () => {
+  for (const voice of ['plain', 'alderson']) {
+    const prompt = buildSystemPrompt({ cwd, voice, mode: 'tools' });
+    assert.match(prompt, /Never skip input validation, error handling or security/);
+    assert.match(prompt, /Tone:/);
+    assert.doesNotMatch(prompt, /Example/);
+    assert.doesNotMatch(prompt, /Answer format/);
+  }
+  assert.throws(() => buildSystemPrompt({ cwd, mode: 'shouty' }), /unknown mode/);
+});

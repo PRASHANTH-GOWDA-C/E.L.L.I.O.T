@@ -11,6 +11,7 @@ export const HELP_TEXT = `Commands
   /history                   this project's saved conversations
   /remember key: value       save a note about this project
   /facts                     list saved notes
+  /edit <instruction>        propose a file change; shows a diff, writes only on y
   /model coder|fast|reason   use this model for the next messages (manual)
   /auto                      pick the model automatically per message
   /voice plain|alderson      change how Elliot talks

@@ -36,6 +36,8 @@ const MODELS = Object.freeze({
 export const VOICES = Object.freeze(['plain', 'alderson']);
 const voice = env('ELLIOT_VOICE', 'plain').toLowerCase();
 
+const toBool = (value) => ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+
 const config = Object.freeze({
   name: 'Elliot',
   version: pkg.version,
@@ -43,6 +45,9 @@ const config = Object.freeze({
   ollamaUrl: env('OLLAMA_URL', 'http://127.0.0.1:11434').replace(/\/+$/, ''),
   aiMode: env('AI_MODE', 'offline'),
   models: MODELS,
+  // Let the router pick the (slow, thinking) reason model automatically.
+  // Off by default: on a CPU-only laptop it can think silently for minutes.
+  autoReason: toBool(env('AUTO_REASON', 'false')),
   // An unknown ELLIOT_VOICE falls back to plain rather than breaking startup.
   voice: VOICES.includes(voice) ? voice : 'plain',
   paths: Object.freeze({

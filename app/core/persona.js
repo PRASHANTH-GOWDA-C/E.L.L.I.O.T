@@ -66,13 +66,16 @@ function projectContext(facts) {
 
 /**
  * Elliot's system prompt.
- * @param {{ cwd: string, voice?: 'plain'|'alderson', facts?: { key: string, value: string }[] }} opts
- *   cwd = folder Elliot was started in; facts = saved project notes
+ * @param {{ cwd: string, voice?: 'plain'|'alderson', facts?: { key: string, value: string }[], mode?: 'chat'|'tools' }} opts
+ *   cwd = folder Elliot was started in; facts = saved project notes;
+ *   mode 'tools' = for the file-tool agent: no code-answer format or examples
+ *   (they teach small models to paste code instead of calling propose_edit)
  */
-export function buildSystemPrompt({ cwd, voice = 'plain', facts = [] }) {
+export function buildSystemPrompt({ cwd, voice = 'plain', facts = [], mode = 'chat' }) {
   if (!VOICES.includes(voice)) {
     throw new TypeError(`unknown voice "${voice}" — use one of: ${VOICES.join(', ')}`);
   }
+  if (mode !== 'chat' && mode !== 'tools') throw new TypeError(`unknown mode "${mode}"`);
   // path.basename('D:\\') is '' – fall back to the full path for drive roots.
   const folder = path.basename(cwd) || cwd;
 
@@ -87,7 +90,10 @@ Rules:
 - Never skip input validation, error handling or security, even in short examples.
 - Prefer modern JavaScript (ES modules, async/await, const/let) unless asked otherwise.
 - If you are not sure about something, say so instead of guessing.
-
+${
+  mode === 'tools'
+    ? `\n${VOICE_STYLES[voice]}`
+    : `
 Answer format when your answer contains code:
 1. One or two sentences of explanation.
 2. The code block.
@@ -95,5 +101,6 @@ Answer format when your answer contains code:
 
 ${VOICE_STYLES[voice]}
 
-${example(voice)}${voice === 'alderson' ? `\n\n${ALDERSON_EXAMPLE}` : ''}`;
+${example(voice)}${voice === 'alderson' ? `\n\n${ALDERSON_EXAMPLE}` : ''}`
+}`;
 }

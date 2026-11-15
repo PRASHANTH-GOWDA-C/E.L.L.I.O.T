@@ -6,8 +6,10 @@ import { chooseModel } from '../../core/router.js';
 import { Session } from '../../core/session.js';
 import { LlmError, isModelInstalled, listModels, missingModelError } from '../../core/llm.js';
 import { runCheck } from '../../core/check.js';
-import { NotCheckedFixer, fixNotChecked, formatFacts, formatHistory } from '../../core/format.js';
+import { NotCheckedFixer, diffLineKind, fixNotChecked, formatFacts, formatHistory } from '../../core/format.js';
 import { parseFact } from '../../core/memory.js';
+import { runAgent } from '../../core/agent.js';
+import { createFileTools } from '../../core/tools/files.js';
 import { html } from './html.js';
 import { parseBlocks } from './blocks.js';
 import { HELP_TEXT, PLANNED_COMMANDS, ROLES } from './commands.js';
@@ -16,6 +18,8 @@ const defaultDeps = {
   createSession: (opts) => new Session(opts),
   listModels,
   runCheck,
+  runAgent,
+  createFileTools,
 };
 
 const STATUS_LABELS = {
@@ -25,9 +29,11 @@ const STATUS_LABELS = {
   stopped: ['stopped', 'yellow'],
   error: ['error', 'red'],
   checking: ['checking models…', 'yellow'],
+  editing: ['reading files…', 'yellow'],
+  review: ['review the change', 'magenta'],
 };
 
-const BUSY = new Set(['thinking', 'streaming', 'checking']);
+const BUSY = new Set(['thinking', 'streaming', 'checking', 'editing', 'review']);
 const QUIT_COMMANDS = new Set(['q', 'q!', 'quit', 'qa', 'wq']);
 const normaliseNewlines = (text) => text.replace(/\r\n?/g, '\n');
 
@@ -118,7 +124,32 @@ function StatusBar({ mode, status, stats, route, columns }) {
     <//>`;
 }
 
-function InputLine({ mode, input, cmdline, busy }) {
+const DIFF_COLORS = { header: 'white', hunk: 'cyan', add: 'green', del: 'red', meta: 'gray', context: undefined };
+
+/** Proposed change: path, coloured diff (scrollable), y/N question. */
+function DiffPanel({ proposal, index, total, scroll, height }) {
+  const lines = proposal.diff.trimEnd().split('\n');
+  const visible = Math.max(1, height - 4); // border + title + question
+  const top = Math.min(scroll, Math.max(0, lines.length - visible));
+  const what = proposal.isNew ? 'new file' : `+${proposal.additions} −${proposal.deletions}`;
+  const more = lines.length > visible ? ` · lines ${top + 1}-${Math.min(top + visible, lines.length)} of ${lines.length}` : '';
+  return html`
+    <${Box} flexDirection="column" flexGrow=${1} borderStyle="round" borderColor="magenta" paddingX=${1} overflow="hidden">
+      <${Text} bold wrap="truncate">Proposed change${total > 1 ? ` (${index + 1}/${total})` : ''}: ${proposal.absolutePath} <${Text} dimColor>(${what}${more})<//><//>
+      <${Box} flexDirection="column" flexGrow=${1} overflow="hidden">
+        ${lines.slice(top, top + visible).map((line, i) => {
+          const kind = diffLineKind(line);
+          return html`<${Text} key=${i} color=${DIFF_COLORS[kind]} bold=${kind === 'header'} wrap="truncate">${line || ' '}<//>`;
+        })}
+      <//>
+      <${Text}><${Text} bold color="magenta">Apply this change? [y/N]<//><${Text} dimColor>  y apply · n/Esc skip · j/k scroll<//><//>
+    <//>`;
+}
+
+function InputLine({ mode, input, cmdline, busy, reviewing }) {
+  if (reviewing) {
+    return html`<${Box} flexShrink=${0}><${Text} dimColor>Nothing is written unless you press y.<//><//>`;
+  }
   if (mode === 'normal') {
     return html`
       <${Box} flexShrink=${0}>
@@ -210,6 +241,7 @@ export function App({
   const [status, setStatus] = useState('ready');
   const [stats, setStats] = useState(null);
   const [scroll, setScroll] = useState(null); // null = follow the newest message
+  const [review, setReview] = useState(null); // { proposals, index, scroll } while a diff awaits y/n
   const controllerRef = useRef(null);
   const busy = BUSY.has(status);
 
@@ -389,6 +421,78 @@ export function App({
     info(`Notes for this project\n${formatFacts(list)}`);
   }
 
+  // ---- File edits (/edit) ----
+  // The agent can only PROPOSE; files are written solely in decideEdit(true),
+  // i.e. after the user pressed y on the diff panel.
+  const filesRef = useRef(null);
+
+  async function runEdit(instruction) {
+    if (!instruction) return info('Usage: /edit <instruction>   e.g. /edit add a JSDoc comment to src/app.js', 'error');
+    try {
+      filesRef.current ??= deps.createFileTools(cwd);
+    } catch (err) {
+      return info(`Cannot use files in ${cwd}: ${err.message}`, 'error');
+    }
+    const role = manualRole ?? 'coder';
+    const editModel = config.models[role].name;
+    setRoute(`tools: ${role}`);
+    addMessage({ role: 'user', text: `/edit ${instruction}` });
+    setStatus('editing');
+    setScroll(null);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    try {
+      const result = await deps.runAgent({
+        instruction,
+        files: filesRef.current,
+        model: editModel,
+        voice,
+        facts: memory?.getFacts(sessionRef.current.project) ?? [],
+        signal: controller.signal,
+        onEvent: (e) => info(`→ ${e.name} ${e.summary}${e.ok ? '' : `  ✖ ${e.error}`}`),
+      });
+      if (result.answer) addMessage({ role: 'assistant', text: fixNotChecked(result.answer), state: 'done' });
+      if (result.proposals.length === 0) {
+        info(result.fallback ? 'This model cannot use file tools; no change was proposed.' : 'No change proposed.');
+        setStatus('ready');
+      } else {
+        setReview({ proposals: result.proposals, index: 0, scroll: 0 });
+        setStatus('review');
+      }
+    } catch (err) {
+      if (err instanceof LlmError && err.code === 'ABORTED') {
+        info('[stopped — nothing was written]');
+        setStatus('stopped');
+      } else {
+        info(err.message, 'error');
+        setStatus('error');
+      }
+    } finally {
+      controllerRef.current = null;
+    }
+  }
+
+  function decideEdit(approved) {
+    const { proposals, index } = review;
+    const proposal = proposals[index];
+    if (approved) {
+      const written = filesRef.current.applyEdit(proposal.path, proposal.newContent, {
+        confirmed: true,
+        baseHash: proposal.baseHash,
+      });
+      if (written.ok) info(`✔ Wrote ${written.absolutePath} (${written.bytes} bytes)`);
+      else info(`Not written: ${written.error}`, 'error');
+    } else {
+      info(`Not applied: ${proposal.absolutePath}`);
+    }
+    if (index + 1 < proposals.length) {
+      setReview({ proposals, index: index + 1, scroll: 0 });
+    } else {
+      setReview(null);
+      setStatus('ready');
+    }
+  }
+
   async function showModelsReport() {
     setStatus('checking');
     const lines = [];
@@ -425,6 +529,9 @@ export function App({
         break;
       case 'facts':
         showFacts();
+        break;
+      case 'edit':
+        runEdit(rest);
         break;
       case 'model':
         switchModel(args[0]);
@@ -470,6 +577,21 @@ export function App({
 
   // ---- Keys ----
   useInput((typed, key) => {
+    // Reviewing a proposed edit: only y / n / scrolling. Nothing else can write.
+    if (review) {
+      const lines = review.proposals[review.index].diff.split('\n').length;
+      const scrollTo = (n) => setReview((r) => ({ ...r, scroll: Math.max(0, Math.min(n, lines - 1)) }));
+      if (typed === 'y' || typed === 'Y') decideEdit(true);
+      else if (typed === 'n' || typed === 'N' || key.escape || key.return) decideEdit(false);
+      else if (typed === 'j' || key.downArrow) scrollTo(review.scroll + 1);
+      else if (typed === 'k' || key.upArrow) scrollTo(review.scroll - 1);
+      else if (key.pageDown) scrollTo(review.scroll + 10);
+      else if (key.pageUp) scrollTo(review.scroll - 10);
+      else if (typed === 'g') scrollTo(0);
+      else if (typed === 'G') scrollTo(lines);
+      return;
+    }
+
     if (key.pageUp) return scrollBy(-page);
     if (key.pageDown) return scrollBy(page);
 
@@ -518,14 +640,23 @@ export function App({
   return html`
     <${Box} flexDirection="column" height=${height}>
       <${Header} role=${activeRole} auto=${!manualRole} model=${model} mode=${config.aiMode} voice=${voice} folder=${folder} />
-      <${Box} ref=${viewportRef} flexGrow=${1} flexDirection="column" overflow="hidden" contentOffsetY=${top}>
-        <${Box} ref=${contentRef} flexDirection="column" flexShrink=${0} paddingX=${1}>
-          ${messages.length === 0
-            ? html`<${Box} marginTop=${1}><${Text} dimColor>Ask me anything about ${folder}. Type /help for commands.<//><//>`
-            : messages.map((m) => html`<${Message} key=${m.id} message=${m} />`)}
-        <//>
-      <//>
+      ${review
+        ? html`<${DiffPanel}
+            proposal=${review.proposals[review.index]}
+            index=${review.index}
+            total=${review.proposals.length}
+            scroll=${review.scroll}
+            height=${height - 4}
+          />`
+        : html`
+          <${Box} ref=${viewportRef} flexGrow=${1} flexDirection="column" overflow="hidden" contentOffsetY=${top}>
+            <${Box} ref=${contentRef} flexDirection="column" flexShrink=${0} paddingX=${1}>
+              ${messages.length === 0
+                ? html`<${Box} marginTop=${1}><${Text} dimColor>Ask me anything about ${folder}. Type /help for commands.<//><//>`
+                : messages.map((m) => html`<${Message} key=${m.id} message=${m} />`)}
+            <//>
+          <//>`}
       <${StatusBar} mode=${mode} status=${status} stats=${stats} route=${route} columns=${columns > 0 ? columns : 80} />
-      <${InputLine} mode=${mode} input=${input} cmdline=${cmdline} busy=${busy} />
+      <${InputLine} mode=${mode} input=${input} cmdline=${cmdline} busy=${busy} reviewing=${Boolean(review)} />
     <//>`;
 }
